@@ -237,7 +237,8 @@ export async function leftLoginForm(
   waitMs = 8000,
 ): Promise<boolean> {
   const findField = async () => {
-    for (const sel of passwordSelectors) {
+    // Same order as fillPassword: bank-specific first, then the generic fallbacks.
+    for (const sel of [...passwordSelectors, ...GENERIC_PASSWORD_SELECTORS]) {
       const el = await page.$(sel).catch(() => null);
       if (el) return el;
     }

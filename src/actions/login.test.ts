@@ -32,3 +32,13 @@ describe("leftLoginForm", () => {
     expect(await leftLoginForm(page, ["#inputPassword"], [], 0)).toBe(false);
   });
 });
+
+describe("leftLoginForm with the generic password selector", () => {
+  it("also looks for input[type=password], the selector fillPassword falls back to", async () => {
+    let presses = 0;
+    const field = { focus: vi.fn(async () => {}), press: vi.fn(async () => { presses++; }) };
+    const page = { $: vi.fn(async (sel: string) => (sel === 'input[type="password"]' && presses < 1 ? field : null)) } as unknown as Page;
+    expect(await leftLoginForm(page, ["#inputPassword"], [], 0)).toBe(true);
+    expect(field.press).toHaveBeenCalledWith("Enter");
+  });
+});
