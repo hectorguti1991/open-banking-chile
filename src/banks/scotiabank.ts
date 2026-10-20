@@ -6,6 +6,7 @@ import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
+import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
 
@@ -330,14 +331,19 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   // Diagnostics: XHR/fetch endpoints the site calls (path only, no query string), to find the
   // movements API when the DOM extraction comes back empty.
   const dataRequests: string[] = [];
+  // JSON bodies of the movements API (…/accounts/<type>/<id>/transactions), read after the DOM pass.
+  const transactionResponses: Array<{ path: string; json: unknown }> = [];
   page.on("response", (res) => {
     const type = res.request().resourceType();
     if (type !== "xhr" && type !== "fetch") return;
-    try {
-      const u = new URL(res.url());
-      const entry = `${res.status()} ${u.host}${u.pathname}`;
-      if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
-    } catch { /* ignore */ }
+    let u: URL;
+    try { u = new URL(res.url()); } catch { return; }
+    if (!u.hostname.endsWith("scotiabank.cl")) return;
+    const entry = `${res.status()} ${u.host}${u.pathname}`;
+    if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
+    if (/\/transactions\/?$/.test(u.pathname) && res.status() === 200) {
+      res.json().then((json) => transactionResponses.push({ path: u.pathname, json })).catch(() => {});
+    }
   });
 
   debugLog.push("1. Navigating to Scotiabank...");
@@ -483,8 +489,17 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   } catch { /* ignore */ }
 
   // 9. Extract current period
-  const movements = await scotiaPaginate(page, debugLog);
+  let movements = await scotiaPaginate(page, debugLog);
   debugLog.push(`9. Extracted ${movements.length} movements (current period)`);
+
+  // The site loads movements from a JSON API; when it yields more than the on-screen table
+  // (the home page only lists the latest few), use it instead.
+  const apiMovements = transactionResponses.flatMap((r) => parseTransactionsJson(r.json));
+  for (const r of transactionResponses) {
+    debugLog.push(`  API ${r.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, "<id>")}: ${describeJsonShape(r.json).slice(0, 600)}`);
+  }
+  debugLog.push(`  API movements: ${apiMovements.length}`);
+  if (apiMovements.length > movements.length) movements = apiMovements;
   progress(`Periodo actual: ${movements.length} movimientos`);
 
   // 10. Historical periods via "Consultar Cartolas" (month/year dropdowns)
