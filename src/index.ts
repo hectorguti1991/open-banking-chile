@@ -53,6 +53,7 @@ export type {
 } from "./types.js";
 
 export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
+export { findChrome } from "./utils.js";
 
 // Re-export individual banks for direct import
 export { default as bchile } from "./banks/bchile.js";
