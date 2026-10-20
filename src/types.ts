@@ -131,6 +131,11 @@ export interface ScraperOptions extends BankCredentials {
   onProgress?: (step: string) => void;
   /** Callback invocado en cada línea de debug en tiempo real */
   onDebug?: (line: string) => void;
+  /**
+   * Carpeta de perfil de Chrome persistente. Con ella, el banco recuerda el dispositivo registrado
+   * (por ejemplo BCI) entre ejecuciones. Si falta, cada ejecución usa un perfil temporal.
+   */
+  userDataDir?: string;
 }
 
 /** Interfaz que debe implementar cada banco */

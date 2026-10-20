@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { DebugLog, delay, deduplicateAcrossSources, deduplicateMovements, findChrome, monthYearLabel, normalizeDate, normalizeOwner, normalizeInstallments, parseChileanAmount } from "../utils.js";
@@ -13,8 +13,8 @@ const CMR_WAIT_MS = 30_000;
 
 // ─── Browser helpers ─────────────────────────────────────────────
 
-async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Browser; page: Page; debugLog: string[] }> {
-  const { chromePath, headful, onDebug } = options;
+async function launchPlaywright(options: ScraperOptions): Promise<{ close: () => Promise<void>; page: Page; debugLog: string[] }> {
+  const { chromePath, headful, onDebug, userDataDir } = options;
   const debugLog: string[] = onDebug ? new DebugLog(onDebug) : [];
 
   const execPath = findChrome(chromePath);
@@ -26,7 +26,7 @@ async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Bro
     );
   }
 
-  const browser = await chromium.launch({
+  const launchOptions = {
     executablePath: execPath,
     headless: !headful,
     args: [
@@ -37,12 +37,23 @@ async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Bro
       "--disable-blink-features=AutomationControlled",
       "--disable-notifications",
     ],
-  });
-
-  const context = await browser.newContext({
+  };
+  const contextOptions = {
     viewport: { width: 1280, height: 900 },
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  });
+  };
+
+  // With userDataDir the profile persists between runs, so the bank remembers the device.
+  let context: BrowserContext;
+  let close: () => Promise<void>;
+  if (userDataDir) {
+    context = await chromium.launchPersistentContext(userDataDir, { ...launchOptions, ...contextOptions });
+    close = () => context.close();
+  } else {
+    const browser: Browser = await chromium.launch(launchOptions);
+    context = await browser.newContext(contextOptions);
+    close = () => browser.close();
+  }
 
   // Hide automation signals
   await context.addInitScript(() => {
@@ -50,7 +61,7 @@ async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Bro
   });
 
   const page = await context.newPage();
-  return { browser, page, debugLog };
+  return { close, page, debugLog };
 }
 
 async function screenshotIfEnabled(page: Page, name: string, enabled: boolean, debugLog: string[]): Promise<string | undefined> {
@@ -895,11 +906,11 @@ async function scrapeFalabella(options: ScraperOptions): Promise<ScrapeResult> {
     return { success: false, bank, accounts: [], error: "Debes proveer RUT y clave." };
   }
 
-  let browser: Browser | undefined;
+  let close: (() => Promise<void>) | undefined;
 
   try {
     const session = await launchPlaywright(options);
-    browser = session.browser;
+    close = session.close;
     const { page, debugLog } = session;
 
     // Login
@@ -972,7 +983,7 @@ async function scrapeFalabella(options: ScraperOptions): Promise<ScrapeResult> {
       error: `Error del scraper: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (close) await close().catch(() => {});
   }
 }
 

@@ -10,6 +10,8 @@ export interface BrowserOptions {
   viewport?: { width: number; height: number };
   /** Callback invocado en cada línea de debug en tiempo real */
   onDebug?: (line: string) => void;
+  /** Carpeta de perfil de Chrome persistente (cookies, dispositivo registrado). Si falta, perfil temporal. */
+  userDataDir?: string;
 }
 
 export interface BrowserSession {
@@ -54,7 +56,7 @@ export async function launchBrowser(
   options: BrowserOptions,
   saveScreenshots: boolean,
 ): Promise<BrowserSession> {
-  const { chromePath, headful, forceHeadful, extraArgs, viewport, onDebug } = options;
+  const { chromePath, headful, forceHeadful, extraArgs, viewport, onDebug, userDataDir } = options;
   const debugLog: string[] = onDebug ? new DebugLog(onDebug) : [];
 
   // Some banks (e.g. BancoEstado) block headless browsers via TLS fingerprinting
@@ -82,6 +84,7 @@ export async function launchBrowser(
     executablePath,
     headless: forceHeadful ? false : !headful,
     args: [...DEFAULT_ARGS, ...(extraArgs || [])],
+    ...(userDataDir ? { userDataDir } : {}),
   });
 
   const page = await browser.newPage();
