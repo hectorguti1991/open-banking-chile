@@ -327,6 +327,19 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const bank = "scotiabank";
 
   // 1. Navigate
+  // Diagnostics: XHR/fetch endpoints the site calls (path only, no query string), to find the
+  // movements API when the DOM extraction comes back empty.
+  const dataRequests: string[] = [];
+  page.on("response", (res) => {
+    const type = res.request().resourceType();
+    if (type !== "xhr" && type !== "fetch") return;
+    try {
+      const u = new URL(res.url());
+      const entry = `${res.status()} ${u.host}${u.pathname}`;
+      if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
+    } catch { /* ignore */ }
+  });
+
   debugLog.push("1. Navigating to Scotiabank...");
   progress("Abriendo sitio del banco...");
   await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
@@ -420,6 +433,27 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     if (hasTable) { debugLog.push(`  Content loaded: ${hasTable}`); break; }
     await delay(2000);
   }
+
+  // The dashboard shows grey skeleton blocks while the cartola loads; the checks above can pass on
+  // unrelated tables or amounts, so also wait until the skeletons are gone.
+  const startSkeleton = Date.now();
+  while (Date.now() - startSkeleton < 40000) {
+    const loading = await page.evaluate(new Function(`${allDeepJs()}
+      return allDeep(document, "[class*='skeleton' i], [class*='shimmer' i], [class*='placeholder-glow' i], [aria-busy='true']").length;`) as () => number);
+    if (!loading) break;
+    await delay(2000);
+  }
+  debugLog.push(`  Skeletons gone after ${Math.round((Date.now() - startSkeleton) / 1000)}s`);
+
+  // Diagnostics: which tables are on the page (rows + header text).
+  const tableSummary = await page.evaluate(new Function(`${allDeepJs()}
+    return allDeep(document, "table").map(function (t) {
+      var head = (t.querySelector("thead") || t.querySelector("tr"));
+      var text = head ? (head.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 80) : "";
+      return t.querySelectorAll("tr").length + " rows [" + text + "]";
+    });`) as () => string[]);
+  debugLog.push(`  Tables: ${tableSummary.length ? tableSummary.join(" | ") : "none"}`);
+  debugLog.push(`  Data requests: ${dataRequests.length ? dataRequests.join(" ") : "none"}`);
 
   await doSave(page, "04-movements-page");
 
