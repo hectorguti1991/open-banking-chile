@@ -39,11 +39,33 @@ export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export interface FindChromeDeps {
+  platform: NodeJS.Platform;
+  env: Record<string, string | undefined>;
+  exists: (p: string) => boolean;
+}
+
+const defaultFindChromeDeps: FindChromeDeps = {
+  platform: process.platform,
+  env: process.env,
+  exists: (p) => fs.existsSync(p),
+};
+
 /** Busca Chrome/Chromium en el sistema */
-export function findChrome(customPath?: string): string | null {
-  if (customPath && fs.existsSync(customPath)) return customPath;
+export function findChrome(customPath?: string, deps: FindChromeDeps = defaultFindChromeDeps): string | null {
+  const { platform, env, exists } = deps;
+  if (customPath && exists(customPath)) return customPath;
+
+  // Windows nativo: Program Files, Program Files (x86) y la instalación por usuario.
+  const windows =
+    platform === "win32"
+      ? [env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA]
+          .filter((base): base is string => Boolean(base))
+          .map((base) => path.win32.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+      : [];
 
   const candidates = [
+    ...windows,
     // Linux
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
@@ -60,7 +82,7 @@ export function findChrome(customPath?: string): string | null {
   ];
 
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+    if (exists(p)) return p;
   }
   return null;
 }
