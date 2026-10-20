@@ -5,6 +5,7 @@ import { closePopups, delay, formatRut, monthYearLabel, normalizeDate, deduplica
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { detect2FA, waitFor2FA } from "../actions/two-factor.js";
+import { leftLoginForm } from "../actions/login.js";
 
 // ─── Banco de Chile constants ────────────────────────────────────
 
@@ -167,6 +168,8 @@ async function bchileLogin(
   }
   try { await page.waitForNavigation({ timeout: 25000 }); } catch { /* SPA */ }
   await delay(5000);
+  // Sometimes the scripted click is ignored; a real Enter on the password field goes through.
+  if (page.url().includes("/login")) await leftLoginForm(page, passSelectors, debugLog);
   await doSave(page, "03-after-login");
 
   // Login error

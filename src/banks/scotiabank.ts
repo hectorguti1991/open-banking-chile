@@ -4,7 +4,7 @@ import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
-import { fillRut, fillPassword, clickSubmit, detectLoginError } from "../actions/login.js";
+import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
@@ -369,6 +369,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   progress("Iniciando sesión...");
   await clickSubmit(page, page, LOGIN_SELECTORS);
   await delay(8000);
+  const left = await leftLoginForm(page, LOGIN_SELECTORS.passwordSelectors, debugLog);
   await doSave(page, "03-after-login");
 
   // 2FA check
@@ -382,6 +383,11 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
     return { success: false, bank, accounts: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+  }
+
+  if (!left) {
+    const ss = await page.screenshot({ encoding: "base64" });
+    return { success: false, bank, accounts: [], error: "Login no navegó fuera de la página.", screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   debugLog.push("6. Login OK!");

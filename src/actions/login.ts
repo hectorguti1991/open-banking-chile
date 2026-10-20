@@ -224,3 +224,30 @@ export async function detectLoginError(
 
   return null;
 }
+
+/**
+ * Checks that the login form is gone after submitting. Some sites ignore the scripted click on
+ * "Ingresar"; a real Enter key press on the password field usually goes through. Returns false when
+ * the form is still visible after that, so the scraper can report a failed login instead of "Login OK".
+ */
+export async function leftLoginForm(
+  page: Page,
+  passwordSelectors: string[],
+  debugLog: string[],
+  waitMs = 8000,
+): Promise<boolean> {
+  const findField = async () => {
+    for (const sel of passwordSelectors) {
+      const el = await page.$(sel).catch(() => null);
+      if (el) return el;
+    }
+    return null;
+  };
+  const field = await findField();
+  if (!field) return true;
+  debugLog.push("  Login form still visible, pressing Enter");
+  await field.focus().catch(() => {});
+  await field.press("Enter");
+  await new Promise((r) => setTimeout(r, waitMs));
+  return (await findField()) === null;
+}
