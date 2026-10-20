@@ -333,6 +333,8 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const dataRequests: string[] = [];
   // JSON bodies of the movements API (…/accounts/<type>/<id>/transactions), read after the DOM pass.
   const transactionResponses: Array<{ path: string; json: unknown }> = [];
+  // JSON bodies of card-related endpoints, logged as shapes only (keys and types).
+  const cardResponses: Array<{ path: string; json: unknown }> = [];
   page.on("response", (res) => {
     const type = res.request().resourceType();
     if (type !== "xhr" && type !== "fetch") return;
@@ -343,6 +345,9 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
     if (/\/transactions\/?$/.test(u.pathname) && res.status() === 200) {
       res.json().then((json) => transactionResponses.push({ path: u.pathname, json })).catch(() => {});
+    } else if (/card|tarjet|tdc|credit/i.test(u.pathname) && res.status() === 200) {
+      const path = u.pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, "<id>").replace(/\d{6,}/g, "<n>");
+      res.json().then((json) => cardResponses.push({ path, json })).catch(() => {});
     }
   });
 
@@ -722,6 +727,33 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     } else {
       debugLog.push("  Could not navigate to Cartolas");
     }
+  }
+
+  // 11. Credit cards (discovery): open "Tarjetas" and log which endpoints and JSON shapes the site uses.
+  // No card movements are emitted yet; a wrong sign or amount would later duplicate as new ids.
+  try {
+    debugLog.push("11. Exploring credit cards...");
+    progress("Revisando tarjetas de crédito...");
+    const clickByText = (targets: string[]) =>
+      page.evaluate(new Function(`${allDeepJs()}
+        var targets = ${JSON.stringify(targets)};
+        for (const el of allDeep(document, "a, button, li, span, [role='tab'], [role='menuitem']")) {
+          const text = (el.innerText || "").trim().toLowerCase();
+          if (targets.indexOf(text) !== -1) { el.click(); return text; }
+        }
+        return null;`) as () => string | null);
+    const before = dataRequests.length;
+    const opened = await clickByText(["tarjetas", "tarjetas de crédito", "mis tarjetas"]);
+    debugLog.push(`  Clicked: ${opened ?? "(no Tarjetas link)"}`);
+    await delay(6000);
+    const sub = await clickByText(["movimientos", "ver movimientos", "últimos movimientos", "no facturados", "movimientos no facturados", "ver detalle"]);
+    debugLog.push(`  Clicked: ${sub ?? "(no movements link)"}`);
+    await delay(8000);
+    await doSave(page, "08-tarjetas");
+    debugLog.push(`  Card data requests: ${dataRequests.slice(before).join(" ") || "none"}`);
+    for (const r of cardResponses) debugLog.push(`  Card API ${r.path}: ${describeJsonShape(r.json).slice(0, 800)}`);
+  } catch (e) {
+    debugLog.push(`  Card exploration failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const deduplicated = deduplicateMovements(movements);
