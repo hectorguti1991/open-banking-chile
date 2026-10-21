@@ -6,7 +6,7 @@ import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
-import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
+import { describeJsonShape, findLinkedEntries, parseTransactionsJson } from "./scotiabank-api.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
 
@@ -335,6 +335,10 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const transactionResponses: Array<{ path: string; json: unknown }> = [];
   // JSON bodies of card-related endpoints, logged as shapes only (keys and types).
   const cardResponses: Array<{ path: string; json: unknown }> = [];
+  // Menu and product-list JSON, to find where the card movements live.
+  const menuResponses: Array<{ path: string; json: unknown }> = [];
+  // Once the card exploration starts, every JSON response is logged as a shape.
+  let exploringCards = false;
   page.on("response", (res) => {
     const type = res.request().resourceType();
     if (type !== "xhr" && type !== "fetch") return;
@@ -345,7 +349,9 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
     if (/\/transactions\/?$/.test(u.pathname) && res.status() === 200) {
       res.json().then((json) => transactionResponses.push({ path: u.pathname, json })).catch(() => {});
-    } else if (/card|tarjet|tdc|credit/i.test(u.pathname) && res.status() === 200) {
+    } else if (/\/menu\/|\/v1\/accounts\/?$/.test(u.pathname) && res.status() === 200) {
+      res.json().then((json) => menuResponses.push({ path: u.pathname, json })).catch(() => {});
+    } else if ((exploringCards || /card|tarjet|tdc|credit/i.test(u.pathname)) && res.status() === 200 && !/offers|interaction|advertising/.test(u.pathname)) {
       const path = u.pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, "<id>").replace(/\d{6,}/g, "<n>");
       res.json().then((json) => cardResponses.push({ path, json })).catch(() => {});
     }
@@ -742,13 +748,38 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
           if (targets.indexOf(text) !== -1) { el.click(); return text; }
         }
         return null;`) as () => string | null);
+    const CARD_TEXT = /tarjeta|visa|master|amex|cr[eé]dito/i;
+    for (const r of menuResponses) {
+      debugLog.push(`  Menu ${r.path}: ${findLinkedEntries(r.json, CARD_TEXT).slice(0, 30).join(" | ") || "no card entries"}`);
+      if (/accounts/.test(r.path)) debugLog.push(`  Products shape: ${describeJsonShape(r.json).slice(0, 800)}`);
+    }
+    // Visible clickable texts (short, digits masked) — what the card section offers to click.
+    const visibleTexts = () =>
+      page.evaluate(new Function(`${allDeepJs()}
+        var out = [];
+        for (const el of allDeep(document, "a, button, [role='tab'], [role='menuitem'], [role='button']")) {
+          if (!el.offsetParent) continue;
+          const text = (el.innerText || "").replace(/\\s+/g, " ").trim();
+          if (!text || text.length > 50) continue;
+          const href = el.getAttribute && el.getAttribute("href");
+          const entry = (text + (href ? " -> " + href : "")).replace(/\\$\\s*[\\d.,]+/g, "$<monto>").replace(/\\d{4,}/g, "<n>");
+          if (out.indexOf(entry) === -1) out.push(entry);
+        }
+        return out.slice(0, 60);`) as () => string[]);
     const before = dataRequests.length;
+    exploringCards = true;
     const opened = await clickByText(["tarjetas", "tarjetas de crédito", "mis tarjetas"]);
     debugLog.push(`  Clicked: ${opened ?? "(no Tarjetas link)"}`);
-    await delay(6000);
-    const sub = await clickByText(["movimientos", "ver movimientos", "últimos movimientos", "no facturados", "movimientos no facturados", "ver detalle"]);
+    await delay(4000);
+    debugLog.push(`  Visible after Tarjetas: ${(await visibleTexts()).join(" | ")}`);
+    const sub = await clickByText([
+      "movimientos", "ver movimientos", "últimos movimientos", "movimientos no facturados", "no facturados",
+      "estado de cuenta", "movimientos tarjeta de crédito", "mis tarjetas de crédito", "tarjeta de crédito", "ver detalle",
+    ]);
     debugLog.push(`  Clicked: ${sub ?? "(no movements link)"}`);
     await delay(8000);
+    debugLog.push(`  URL: ${page.url().replace(/\d{6,}/g, "<n>")}`);
+    debugLog.push(`  Visible after: ${(await visibleTexts()).join(" | ")}`);
     await doSave(page, "08-tarjetas");
     debugLog.push(`  Card data requests: ${dataRequests.slice(before).join(" ") || "none"}`);
     for (const r of cardResponses) debugLog.push(`  Card API ${r.path}: ${describeJsonShape(r.json).slice(0, 800)}`);
