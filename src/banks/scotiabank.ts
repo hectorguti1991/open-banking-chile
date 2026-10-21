@@ -7,7 +7,7 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
 import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
-import { cardLast4, parseBilledCardJson, parseUnbilledCardJson } from "./scotiabank-cards.js";
+import { cardLast4, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4 } from "./scotiabank-cards.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
 
@@ -759,6 +759,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
 // ─── Credit cards ────────────────────────────────────────────────
 
 const CARD_STATEMENT_URL = "https://www.scotiabank.cl/mfe/sweb/mfe-shell-web-cl/mfe/mfe-simple-account-statement-web-cl/";
+const CARD_HOME_URL = "https://www.scotiabank.cl/mfe/sweb/mfe-shell-web-cl/mfe/mfe/sweb/mfe-home-cl/";
 
 /**
  * Reads every card from the "Estado Cuenta Simple" page. Its iframe lists the cards in a <select>
@@ -773,25 +774,72 @@ async function scrapeCreditCards(page: Page, debugLog: string[], progress: (s: s
     progress("Leyendo tarjetas de crédito...");
     const waitFor = (trans: string) =>
       page.waitForResponse((r) => r.url().includes("/dotrxajax") && r.url().includes(`TRANS=${trans}`) && r.status() === 200, { timeout: 30000 })
-        .then((r) => r.json() as Promise<unknown>)
+        .then(async (r) => {
+          const text = (await r.text()).replace(/^﻿/, "").trim();
+          try { return JSON.parse(text) as unknown; } catch {
+            debugLog.push(`  ${trans}: response is not JSON (${text.length} chars)`);
+            return null;
+          }
+        })
         .catch(() => null);
     const open = async (tab: string, last4: string | null, trans: string) => {
       const response = waitFor(trans);
       const url = `${CARD_STATEMENT_URL}?tab=${tab}${last4 ? `&card=${last4}` : ""}`;
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 })
+        .catch((e) => debugLog.push(`  Navigation failed: ${e instanceof Error ? e.message : String(e)}`));
       return response;
     };
 
-    const firstUnbilled = await open("movimientos-no-facturados", null, "vt_UltimosMovVisaEnc");
-    let labels: string[] = [];
-    for (let i = 0; i < 15 && labels.length === 0; i++) {
-      const frame = page.frames().find((f) => f.url().includes("mfe-simple-account-statement"));
-      if (frame) {
-        labels = await frame.evaluate(() =>
-          Array.from(document.querySelectorAll("select option")).map((o) => (o.textContent || "").trim()).filter((t) => /\*{4}\d{4}/.test(t)),
-        ).catch(() => []);
+    const readLabels = async (seconds: number) => {
+      for (let i = 0; i < seconds; i++) {
+        for (const frame of page.frames()) {
+          const found = await frame.evaluate(() =>
+            Array.from(document.querySelectorAll("select option")).map((o) => (o.textContent || "").trim()).filter((t) => /\*{4}\s*\d{4}/.test(t)),
+          ).catch(() => [] as string[]);
+          if (found.length) return found;
+        }
+        await delay(1000);
       }
-      if (labels.length === 0) await delay(1000);
+      return [] as string[];
+    };
+    // Clicks the first visible element (in any frame) whose text is exactly one of the targets,
+    // preferring tabs and buttons over side-menu entries.
+    const clickInFrames = async (targets: string[]) => {
+      for (const frame of page.frames()) {
+        const hit = await frame.evaluate((t: string[]) => {
+          const candidates = Array.from(document.querySelectorAll("[role='tab'], button, a, span, li"))
+            .filter((el) => t.includes(((el as HTMLElement).innerText || "").trim().toLowerCase()) && (el as HTMLElement).offsetParent !== null);
+          const best = candidates.find((el) => el.getAttribute("role") === "tab" || el.closest("[role='tablist']")) ?? candidates.find((el) => !el.closest("nav, aside"));
+          if (!best) return null;
+          (best as HTMLElement).click();
+          return ((best as HTMLElement).innerText || "").trim();
+        }, targets).catch(() => null);
+        if (hit) return hit;
+      }
+      return null;
+    };
+
+    let firstUnbilled = await open("movimientos-no-facturados", null, "vt_UltimosMovVisaEnc");
+    debugLog.push(`  URL: ${page.url().replace(/\?.*/, "")} · unbilled data: ${firstUnbilled ? "yes" : "no"}`);
+    let labels = await readLabels(firstUnbilled ? 20 : 5);
+    let fromFallback = false;
+    if (labels.length === 0) {
+      // Fallback: the way a person gets there — home, "Tus Productos" › Tarjetas › Ver detalle.
+      await page.goto(CARD_HOME_URL, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+      await delay(8000);
+      debugLog.push(`  Home tab: ${(await clickInFrames(["tarjetas"])) ?? "not found"}`);
+      await delay(5000);
+      const unbilled = waitFor("vt_UltimosMovVisaEnc");
+      debugLog.push(`  Detail link: ${(await clickInFrames(["ver detalle"])) ?? "not found"}`);
+      labels = await readLabels(30);
+      debugLog.push(`  URL: ${page.url().replace(/\?.*/, "")}`);
+      if (!firstUnbilled) firstUnbilled = await Promise.race([unbilled, delay(1000).then(() => null)]);
+    }
+    if (labels.length === 0) {
+      debugLog.push(`  Frames: ${page.frames().map((f) => f.url().replace(/\?.*/, "").slice(0, 90)).join(" | ")}`);
+      // Fallback: the unbilled data names its card in the "TARJETA :" header row.
+      const last4 = unbilledCardLast4(firstUnbilled);
+      if (last4) { labels = [`Tarjeta ****${last4}`]; fromFallback = true; }
     }
     debugLog.push(`  Cards: ${labels.join(" | ") || "none found"}`);
 
@@ -801,8 +849,9 @@ async function scrapeCreditCards(page: Page, debugLog: string[], progress: (s: s
       if (!last4) continue;
       const card = `****${last4}`;
       progress(`Leyendo ${label}...`);
-      // The page opens on the first card, so its unbilled data is already here.
-      const unbilledJson = index === 0 && firstUnbilled ? firstUnbilled : await open("movimientos-no-facturados", last4, "vt_UltimosMovVisaEnc");
+      // Fetched per card even for the first one: the data already received may belong to another card.
+      const unbilledJson = (await open("movimientos-no-facturados", last4, "vt_UltimosMovVisaEnc"))
+        ?? (fromFallback && index === 0 ? firstUnbilled : null);
       const billedJson = await open("movimientos-facturados", last4, "vt_EstadoVisaNacEnc");
       const unbilled = parseUnbilledCardJson(unbilledJson, card);
       const billed = parseBilledCardJson(billedJson, card);

@@ -86,6 +86,18 @@ export function parseBilledCardJson(json: unknown, card: string): BankMovement[]
   return out;
 }
 
+/** Last four digits of the card in the unbilled data's "TARJETA :" header row. */
+export function unbilledCardLast4(json: unknown): string | null {
+  const cols = columns(json, "gtipo");
+  if (!cols) return null;
+  for (let i = 0; i < (cols.gtipo as unknown[]).length; i++) {
+    if (!/^TARJETA/.test(cell(cols, "gtipo", i).trim())) continue;
+    const m = cell(cols, "gdesc", i).trim().match(/(\d{4})$/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 /** "Mastercard Black ****5075" → "5075". */
 export function cardLast4(label: string): string | null {
   const m = label.match(/\*{2,}\s*(\d{4})\b/);

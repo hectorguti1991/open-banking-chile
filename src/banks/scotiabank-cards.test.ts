@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cardLast4, parseBilledCardJson, parseUnbilledCardJson } from "./scotiabank-cards.js";
+import { cardLast4, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4 } from "./scotiabank-cards.js";
 
 // Shapes captured from the site's /cgi-bin/transac/dotrxajax responses (values invented).
 const unbilled = { lstUltimosMovVisaEnc: {
@@ -63,5 +63,12 @@ describe("cardLast4", () => {
   it("takes the last four digits of a masked card label", () => {
     expect(cardLast4("Mastercard Black ****5075")).toBe("5075");
     expect(cardLast4("Cuenta Corriente")).toBeNull();
+  });
+});
+
+describe("unbilledCardLast4", () => {
+  it("reads the card from the TARJETA header row", () => {
+    expect(unbilledCardLast4(unbilled)).toBe("5075");
+    expect(unbilledCardLast4({ x: 1 })).toBeNull();
   });
 });
