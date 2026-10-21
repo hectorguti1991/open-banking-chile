@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeJsonShape, findLinkedEntries, parseTransactionsJson } from "./scotiabank-api.js";
+import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
 
 describe("parseTransactionsJson", () => {
   it("reads a list of transactions with date, description and signed amount", () => {
@@ -34,25 +34,5 @@ describe("describeJsonShape", () => {
     expect(shape).toBe("{data:{transactions:[1×{date:string,amount:number,description:string}]},total:number}");
     expect(shape).not.toContain("LIDER");
     expect(shape).not.toContain("15990");
-  });
-});
-
-describe("findLinkedEntries", () => {
-  it("lists the text and link of menu entries whose text matches, masking long digit runs", () => {
-    const menu = { items: [
-      { label: "Cuentas", url: "/cuentas", children: [] },
-      { label: "Tarjetas", children: [
-        { label: "Movimientos tarjeta de crédito", url: "/mfe/tarjetas/movimientos" },
-        { name: "Visa 4567123412341234", link: "/tarjetas/4567123412341234" },
-      ] },
-    ] };
-    expect(findLinkedEntries(menu, /tarjeta|visa/i)).toEqual([
-      "Movimientos tarjeta de crédito -> /mfe/tarjetas/movimientos",
-      "Visa <n> -> /tarjetas/<n>",
-    ]);
-  });
-
-  it("returns [] when nothing matches", () => {
-    expect(findLinkedEntries({ items: [{ label: "Cuentas", url: "/c" }] }, /tarjeta/i)).toEqual([]);
   });
 });

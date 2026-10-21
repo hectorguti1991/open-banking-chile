@@ -1,12 +1,13 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
-import { describeJsonShape, findLinkedEntries, parseTransactionsJson } from "./scotiabank-api.js";
+import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
+import { cardLast4, parseBilledCardJson, parseUnbilledCardJson } from "./scotiabank-cards.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
 
@@ -333,13 +334,6 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const dataRequests: string[] = [];
   // JSON bodies of the movements API (…/accounts/<type>/<id>/transactions), read after the DOM pass.
   const transactionResponses: Array<{ path: string; json: unknown }> = [];
-  // JSON bodies of card-related endpoints, logged as shapes only (keys and types).
-  const cardResponses: Array<{ path: string; json: unknown }> = [];
-  // Menu and product-list JSON, to find where the card movements live.
-  const menuResponses: Array<{ path: string; json: unknown }> = [];
-  // Once the card exploration starts, every JSON response is logged as a shape.
-  let exploringCards = false;
-  const cardRequests: string[] = [];
   page.on("response", (res) => {
     const type = res.request().resourceType();
     if (type !== "xhr" && type !== "fetch") return;
@@ -348,14 +342,8 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     if (!u.hostname.endsWith("scotiabank.cl")) return;
     const entry = `${res.status()} ${u.host}${u.pathname}`;
     if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
-    if (exploringCards && !cardRequests.includes(entry) && cardRequests.length < 60) cardRequests.push(entry);
     if (/\/transactions\/?$/.test(u.pathname) && res.status() === 200) {
       res.json().then((json) => transactionResponses.push({ path: u.pathname, json })).catch(() => {});
-    } else if (/\/menu\/|\/v1\/accounts\/?$/.test(u.pathname) && res.status() === 200) {
-      res.json().then((json) => menuResponses.push({ path: u.pathname, json })).catch(() => {});
-    } else if ((exploringCards || /card|tarjet|tdc|credit/i.test(u.pathname)) && res.status() === 200 && !/offers|interaction|advertising/.test(u.pathname)) {
-      const path = u.pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, "<id>").replace(/\d{6,}/g, "<n>");
-      res.json().then((json) => cardResponses.push({ path, json })).catch(() => {});
     }
   });
 
@@ -737,79 +725,6 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     }
   }
 
-  // 11. Credit cards (discovery): open "Tarjetas" and log which endpoints and JSON shapes the site uses.
-  // No card movements are emitted yet; a wrong sign or amount would later duplicate as new ids.
-  try {
-    debugLog.push("11. Exploring credit cards...");
-    progress("Revisando tarjetas de crédito...");
-    const clickByText = (targets: string[]) =>
-      page.evaluate(new Function(`${allDeepJs()}
-        var targets = ${JSON.stringify(targets)};
-        for (const el of allDeep(document, "a, button, li, span, [role='tab'], [role='menuitem']")) {
-          const text = (el.innerText || "").trim().toLowerCase();
-          if (targets.indexOf(text) !== -1) { el.click(); return text; }
-        }
-        return null;`) as () => string | null);
-    const CARD_TEXT = /tarjeta|visa|master|amex|cr[eé]dito/i;
-    const mask = (s: unknown) => String(s ?? "").replace(/\d{4,}/g, "<n>");
-    for (const r of menuResponses) {
-      debugLog.push(`  Menu ${r.path}: ${findLinkedEntries(r.json, CARD_TEXT).slice(0, 30).join(" | ") || "no card entries"}`);
-      if (!/accounts/.test(r.path) || !Array.isArray(r.json)) continue;
-      // Products the home lists (type + description only). The site reads each one's movements from
-      // .../accounts/<type>/<key>/transactions; try that read-only GET for the non-checking products.
-      for (const p of r.json as Array<Record<string, unknown>>) {
-        debugLog.push(`  Product ${mask(p.type)}: ${mask(p.description)}`);
-        if (p.type === "CTACTE" || typeof p.key !== "string" || typeof p.type !== "string") continue;
-        const url = `/api/clservices/bff-home-main-web/v1/accounts/${encodeURIComponent(p.type)}/${encodeURIComponent(p.key)}/transactions`;
-        const got = await page.evaluate(async (u: string) => {
-          try {
-            const res = await fetch(u, { credentials: "include", headers: { accept: "application/json" } });
-            const text = await res.text();
-            try { return { status: res.status, json: JSON.parse(text) as unknown }; } catch { return { status: res.status, json: null }; }
-          } catch (e) { return { status: 0, json: String(e) }; }
-        }, url);
-        const parsed = parseTransactionsJson(got.json);
-        debugLog.push(`  Product ${mask(p.type)} transactions: ${got.status} ${describeJsonShape(got.json).slice(0, 600)}` +
-          ` · parsed ${parsed.length} (${parsed.filter((m) => m.amount < 0).length} negative)`);
-      }
-    }
-    // Visible clickable texts (short, digits masked) — what the card section offers to click.
-    const visibleTexts = () =>
-      page.evaluate(new Function(`${allDeepJs()}
-        var out = [];
-        for (const el of allDeep(document, "a, button, [role='tab'], [role='menuitem'], [role='button']")) {
-          if (!el.offsetParent) continue;
-          const text = (el.innerText || "").replace(/\\s+/g, " ").trim();
-          if (!text || text.length > 50) continue;
-          const href = el.getAttribute && el.getAttribute("href");
-          const entry = (text + (href ? " -> " + href : "")).replace(/\\$\\s*[\\d.,]+/g, "$<monto>").replace(/\\d{4,}/g, "<n>");
-          if (out.indexOf(entry) === -1) out.push(entry);
-        }
-        return out.slice(0, 60);`) as () => string[]);
-    exploringCards = true;
-    const opened = await clickByText(["tarjetas", "tarjetas de crédito", "mis tarjetas"]);
-    debugLog.push(`  Clicked: ${opened ?? "(no Tarjetas link)"}`);
-    await delay(2000);
-    const summary = await clickByText(["resumen de tarjetas", "mis tarjetas"]);
-    debugLog.push(`  Clicked: ${summary ?? "(no Resumen de Tarjetas link)"}`);
-    await delay(8000);
-    debugLog.push(`  URL: ${page.url().replace(/\d{6,}/g, "<n>")}`);
-    debugLog.push(`  Visible after Resumen: ${(await visibleTexts()).join(" | ")}`);
-    const sub = await clickByText([
-      "movimientos", "ver movimientos", "últimos movimientos", "movimientos no facturados", "no facturados",
-      "estado de cuenta", "movimientos tarjeta de crédito", "mis tarjetas de crédito", "tarjeta de crédito", "ver detalle",
-    ]);
-    debugLog.push(`  Clicked: ${sub ?? "(no movements link)"}`);
-    await delay(8000);
-    debugLog.push(`  URL: ${page.url().replace(/\d{6,}/g, "<n>")}`);
-    debugLog.push(`  Visible after: ${(await visibleTexts()).join(" | ")}`);
-    await doSave(page, "08-tarjetas");
-    debugLog.push(`  Card data requests: ${cardRequests.join(" ") || "none"}`);
-    for (const r of cardResponses) debugLog.push(`  Card API ${r.path}: ${describeJsonShape(r.json).slice(0, 800)}`);
-  } catch (e) {
-    debugLog.push(`  Card exploration failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
   const deduplicated = deduplicateMovements(movements);
   debugLog.push(`  Total: ${deduplicated.length} unique movements`);
   progress(`Listo — ${deduplicated.length} movimientos totales`);
@@ -828,7 +743,85 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   await doSave(page, "05-final");
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64", fullPage: true })) as string : undefined;
 
-  return { success: true, bank, accounts: [{ balance: balance ?? undefined, movements: deduplicated }], screenshot: ss, debug: debugLog.join("\n") };
+  const creditCards = await scrapeCreditCards(page, debugLog, progress);
+  await doSave(page, "08-tarjetas");
+
+  return {
+    success: true,
+    bank,
+    accounts: [{ balance: balance ?? undefined, movements: deduplicated }],
+    creditCards,
+    screenshot: ss,
+    debug: debugLog.join("\n"),
+  };
+}
+
+// ─── Credit cards ────────────────────────────────────────────────
+
+const CARD_STATEMENT_URL = "https://www.scotiabank.cl/mfe/sweb/mfe-shell-web-cl/mfe/mfe-simple-account-statement-web-cl/";
+
+/**
+ * Reads every card from the "Estado Cuenta Simple" page. Its iframe lists the cards in a <select>
+ * and loads each tab's data from /cgi-bin/transac/dotrxajax, which we read as the page receives it.
+ * Two plastic cards of the same account (titular and adicional) show the same movements; the
+ * second one is skipped so purchases are not counted twice.
+ */
+async function scrapeCreditCards(page: Page, debugLog: string[], progress: (s: string) => void): Promise<CreditCardBalance[]> {
+  const cards: CreditCardBalance[] = [];
+  try {
+    debugLog.push("11. Reading credit cards...");
+    progress("Leyendo tarjetas de crédito...");
+    const waitFor = (trans: string) =>
+      page.waitForResponse((r) => r.url().includes("/dotrxajax") && r.url().includes(`TRANS=${trans}`) && r.status() === 200, { timeout: 30000 })
+        .then((r) => r.json() as Promise<unknown>)
+        .catch(() => null);
+    const open = async (tab: string, last4: string | null, trans: string) => {
+      const response = waitFor(trans);
+      const url = `${CARD_STATEMENT_URL}?tab=${tab}${last4 ? `&card=${last4}` : ""}`;
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+      return response;
+    };
+
+    const firstUnbilled = await open("movimientos-no-facturados", null, "vt_UltimosMovVisaEnc");
+    let labels: string[] = [];
+    for (let i = 0; i < 15 && labels.length === 0; i++) {
+      const frame = page.frames().find((f) => f.url().includes("mfe-simple-account-statement"));
+      if (frame) {
+        labels = await frame.evaluate(() =>
+          Array.from(document.querySelectorAll("select option")).map((o) => (o.textContent || "").trim()).filter((t) => /\*{4}\d{4}/.test(t)),
+        ).catch(() => []);
+      }
+      if (labels.length === 0) await delay(1000);
+    }
+    debugLog.push(`  Cards: ${labels.join(" | ") || "none found"}`);
+
+    const seen: string[] = [];
+    for (const [index, label] of labels.entries()) {
+      const last4 = cardLast4(label);
+      if (!last4) continue;
+      const card = `****${last4}`;
+      progress(`Leyendo ${label}...`);
+      // The page opens on the first card, so its unbilled data is already here.
+      const unbilledJson = index === 0 && firstUnbilled ? firstUnbilled : await open("movimientos-no-facturados", last4, "vt_UltimosMovVisaEnc");
+      const billedJson = await open("movimientos-facturados", last4, "vt_EstadoVisaNacEnc");
+      const unbilled = parseUnbilledCardJson(unbilledJson, card);
+      const billed = parseBilledCardJson(billedJson, card);
+      debugLog.push(`  ${card}: ${unbilledJson ? unbilled.length : "no data"} unbilled, ${billedJson ? billed.length : "no data"} billed`);
+      const columns = Object.values((unbilledJson ?? {}) as Record<string, unknown>)[0] as Record<string, unknown> | undefined;
+      if (columns && columns.haymas === "S") debugLog.push(`  ${card}: the bank says there are more unbilled movements than it sent`);
+
+      const fingerprint = JSON.stringify([...unbilled, ...billed].map((m) => [m.date, m.description, m.amount, m.source]));
+      if (unbilled.length + billed.length > 0 && seen.includes(fingerprint)) {
+        debugLog.push(`  ${card}: same movements as a previous card (same account), skipped`);
+        continue;
+      }
+      seen.push(fingerprint);
+      cards.push({ label, movements: [...unbilled, ...billed] });
+    }
+  } catch (e) {
+    debugLog.push(`  Credit cards failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return cards;
 }
 
 // ─── Export ──────────────────────────────────────────────────────

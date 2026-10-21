@@ -81,26 +81,6 @@ export function parseTransactionsJson(json: unknown): BankMovement[] {
   return movements;
 }
 
-const TEXT_KEY = /label|name|title|text|nombre|descrip/i;
-const LINK_KEY = /url|href|link|path|route/i;
-const maskDigits = (s: string) => s.replace(/\d{4,}/g, "<n>");
-
-/**
- * "text -> link" for every object in the JSON (a menu, say) whose text matches, with long digit runs
- * masked so card numbers never reach the diagnostics.
- */
-export function findLinkedEntries(json: unknown, pattern: RegExp, out: string[] = []): string[] {
-  if (Array.isArray(json)) {
-    for (const v of json) findLinkedEntries(v, pattern, out);
-  } else if (isObj(json)) {
-    const textKey = pickKey(json, TEXT_KEY, (v) => typeof v === "string" && pattern.test(v));
-    const linkKey = pickKey(json, LINK_KEY, (v) => typeof v === "string" && v.length > 0);
-    if (textKey && linkKey) out.push(maskDigits(`${String(json[textKey]).trim()} -> ${json[linkKey]}`));
-    for (const v of Object.values(json)) findLinkedEntries(v, pattern, out);
-  }
-  return out;
-}
-
 /** Keys and value types of a JSON value, never the values themselves (for diagnostics). */
 export function describeJsonShape(json: unknown, depth = 0): string {
   if (depth > 6) return "…";
