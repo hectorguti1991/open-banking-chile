@@ -7,7 +7,9 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } from "../actions/login.js";
 import { dismissBanners } from "../actions/navigation.js";
 import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
-import { cardLast4, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4 } from "./scotiabank-cards.js";
+import {
+  cardBillingDates, cardLast4, linkUnbilledInstallments, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4,
+} from "./scotiabank-cards.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
 
@@ -853,8 +855,8 @@ async function scrapeCreditCards(page: Page, debugLog: string[], progress: (s: s
       const unbilledJson = (await open("movimientos-no-facturados", last4, "vt_UltimosMovVisaEnc"))
         ?? (fromFallback && index === 0 ? firstUnbilled : null);
       const billedJson = await open("movimientos-facturados", last4, "vt_EstadoVisaNacEnc");
-      const unbilled = parseUnbilledCardJson(unbilledJson, card);
-      const billed = parseBilledCardJson(billedJson, card);
+      const billed = parseBilledCardJson(billedJson, card, cardBillingDates(unbilledJson).last);
+      const unbilled = linkUnbilledInstallments(parseUnbilledCardJson(unbilledJson, card), billed);
       debugLog.push(`  ${card}: ${unbilledJson ? unbilled.length : "no data"} unbilled, ${billedJson ? billed.length : "no data"} billed`);
       const columns = Object.values((unbilledJson ?? {}) as Record<string, unknown>)[0] as Record<string, unknown> | undefined;
       if (columns && columns.haymas === "S") debugLog.push(`  ${card}: the bank says there are more unbilled movements than it sent`);

@@ -36,10 +36,21 @@ function movement(date: string, description: string, amount: number, source: Mov
   return { date, description, amount, balance: 0, source, card };
 }
 
-/** Unbilled movements (`vt_UltimosMovVisaEnc`). Values carry two decimals. */
+/** Last (`fant`) and next (`fsig`) billing dates in the unbilled data, as dd-mm-yyyy. */
+export function cardBillingDates(unbilledJson: unknown): { last: string | null; next: string | null } {
+  const cols = columns(unbilledJson, "ftrs");
+  if (!cols) return { last: null, next: null };
+  return { last: toDate(String(cols.fant ?? "")), next: toDate(String(cols.fsig ?? "")) };
+}
+
+/**
+ * Unbilled movements (`vt_UltimosMovVisaEnc`). Values carry two decimals. Every row will be billed
+ * on the next billing date.
+ */
 export function parseUnbilledCardJson(json: unknown, card: string): BankMovement[] {
   const cols = columns(json, "ftrs");
   if (!cols) return [];
+  const billingDate = cardBillingDates(json).next;
   const out: BankMovement[] = [];
   for (let i = 0; i < (cols.ftrs as unknown[]).length; i++) {
     const date = toDate(cell(cols, "ftrs", i));
@@ -48,9 +59,49 @@ export function parseUnbilledCardJson(json: unknown, card: string): BankMovement
     if (!amount) continue;
     // The merchant name is split across gtipo (first 17 characters) and gdesc (the rest).
     const description = (cell(cols, "gtipo", i) + cell(cols, "gdesc", i)).replace(/\s+/g, " ").trim();
-    out.push(movement(date, description, signed(amount, cell(cols, "svtrs", i)), MOVEMENT_SOURCE.credit_card_unbilled, card));
+    const m = movement(date, description, signed(amount, cell(cols, "svtrs", i)), MOVEMENT_SOURCE.credit_card_unbilled, card);
+    out.push(billingDate ? { ...m, billingDate } : m);
   }
   return out;
+}
+
+const parseInstallments = (s?: string) => {
+  const m = s?.match(/^(\d+)\/(\d+)$/);
+  return m ? { n: Number(m[1]), of: Number(m[2]) } : null;
+};
+const DAY = 24 * 60 * 60 * 1000;
+const dayNumber = (ddmmyyyy: string) => {
+  const [d, m, y] = ddmmyyyy.split("-").map(Number);
+  return Date.UTC(y, m - 1, d) / DAY;
+};
+const sameMerchant = (a: string, b: string) => a.startsWith(b) || b.startsWith(a);
+
+/**
+ * The unbilled list carries no installment fields, so a pending installment looks like a plain
+ * purchase and the purchase total shows up as one more row. Both are recognised from the billed
+ * installments of the same card: a row with the same date, merchant and amount is the next
+ * installment (it takes the billed description, so it keeps its id once billed), and a row whose
+ * amount is the purchase total becomes installment 01 with that total, which is not a spend.
+ */
+export function linkUnbilledInstallments(unbilled: BankMovement[], billed: BankMovement[]): BankMovement[] {
+  const plans = billed.flatMap((b) => {
+    const inst = parseInstallments(b.installments);
+    return inst && inst.of > 1 && b.totalAmount ? [{ b, ...inst }] : [];
+  });
+  return unbilled.map((u) => {
+    if (u.installments) return u;
+    for (const { b, n, of } of plans) {
+      if (b.card !== u.card || !sameMerchant(b.description, u.description)) continue;
+      const pad = (x: number) => String(x).padStart(2, "0");
+      if (u.date === b.date && u.amount === b.amount && n < of) {
+        return { ...u, description: b.description, installments: `${pad(n + 1)}/${pad(of)}`, totalAmount: b.totalAmount };
+      }
+      if (-u.amount === b.totalAmount && Math.abs(dayNumber(u.date) - dayNumber(b.date)) <= 7) {
+        return { ...u, installments: `01/${pad(of)}`, totalAmount: b.totalAmount };
+      }
+    }
+    return u;
+  });
 }
 
 /**
@@ -58,10 +109,11 @@ export function parseUnbilledCardJson(json: unknown, card: string): BankMovement
  * titles. vmtotran is the purchase total with two decimals; vmtocuo is this statement's installment
  * in whole pesos.
  */
-export function parseBilledCardJson(json: unknown, card: string): BankMovement[] {
+export function parseBilledCardJson(json: unknown, card: string, billingDate?: string | null): BankMovement[] {
   const cols = columns(json, "fectran");
   if (!cols) return [];
   const out: BankMovement[] = [];
+  const stamp = (m: BankMovement): BankMovement => (billingDate ? { ...m, billingDate } : m);
   for (let i = 0; i < (cols.fectran as unknown[]).length; i++) {
     if (cell(cols, "tdet", i).trim() !== "D") continue;
     const date = toDate(cell(cols, "fectran", i));
@@ -73,14 +125,14 @@ export function parseBilledCardJson(json: unknown, card: string): BankMovement[]
     if (of > 1) {
       const installment = digits(cell(cols, "vmtocuo", i));
       if (!installment) continue;
-      out.push({
+      out.push(stamp({
         ...movement(date, description, signed(installment, cell(cols, "svmtocuo", i)), MOVEMENT_SOURCE.credit_card_billed, card),
         installments: `${String(n).padStart(2, "0")}/${String(of).padStart(2, "0")}`,
         totalAmount: total,
-      });
+      }));
     } else {
       if (!total) continue;
-      out.push(movement(date, description, signed(total, cell(cols, "svmtotran", i)), MOVEMENT_SOURCE.credit_card_billed, card));
+      out.push(stamp(movement(date, description, signed(total, cell(cols, "svmtotran", i)), MOVEMENT_SOURCE.credit_card_billed, card)));
     }
   }
   return out;

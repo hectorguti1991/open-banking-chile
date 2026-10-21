@@ -35,6 +35,11 @@ export interface BankMovement {
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */
   totalAmount?: number;
+  /**
+   * Fecha de facturación del cargo (dd-mm-yyyy). Útil en cuotas: el banco repite la fecha de compra
+   * en cada cuota, y esta fecha dice en qué estado de cuenta se cobra.
+   */
+  billingDate?: string;
 }
 
 /** Saldo y movimientos de una cuenta bancaria */
