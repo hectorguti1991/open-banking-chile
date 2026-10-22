@@ -99,11 +99,17 @@ export async function saveScreenshot(
   const safeName = name.replace(/[/\\:*?"<>|]/g, "_");
   const dir = path.resolve("screenshots");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  await page.screenshot({
-    path: path.join(dir, `${safeName}.png`),
-    fullPage: true,
-  });
-  debugLog.push(`  Screenshot saved: screenshots/${safeName}.png`);
+  // Una captura es solo para diagnosticar: si falla (por ejemplo, la página mide 0 de ancho mientras
+  // navega), se anota y la lectura sigue.
+  try {
+    await page.screenshot({
+      path: path.join(dir, `${safeName}.png`),
+      fullPage: true,
+    });
+    debugLog.push(`  Screenshot saved: screenshots/${safeName}.png`);
+  } catch (error) {
+    debugLog.push(`  Screenshot failed: ${safeName} (${error instanceof Error ? error.message : String(error)})`);
+  }
 }
 
 /** Cierra popups y modales genéricos */

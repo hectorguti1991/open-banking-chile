@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DebugLog, deduplicateMovements, normalizeDate } from "./utils.js";
+import { DebugLog, deduplicateMovements, normalizeDate, saveScreenshot } from "./utils.js";
 import { MOVEMENT_SOURCE } from "./types.js";
 import type { BankMovement } from "./types.js";
 
@@ -152,5 +152,14 @@ describe("normalizeDate", () => {
     expect(normalizeDate("no es una fecha")).toBe("no es una fecha");
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("saveScreenshot", () => {
+  it("una captura que falla no frena la lectura del banco", async () => {
+    const page = { screenshot: async () => { throw new Error("Protocol error (Page.captureScreenshot): Cannot take screenshot with 0 width."); } };
+    const log: string[] = [];
+    await expect(saveScreenshot(page as never, "03-after-login", true, log)).resolves.toBeUndefined();
+    expect(log).toEqual(["  Screenshot failed: 03-after-login (Protocol error (Page.captureScreenshot): Cannot take screenshot with 0 width.)"]);
   });
 });
