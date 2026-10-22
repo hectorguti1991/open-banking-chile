@@ -12,7 +12,6 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 
 const LOGIN_URL = "https://portaldeclientes.metlife.cl/PIP/login";
 const PORTAL_HOST = "portaldeclientes.metlife.cl";
-const PRODUCTS_URL = "https://portaldeclientes.metlife.cl/PIP/home/productos";
 const LOGIN_TIMEOUT = 60_000;
 const LOAD_TIMEOUT = 45_000;
 
@@ -27,10 +26,25 @@ export function metlifeLoan(d: { credit: string | null; debt: string | null; ins
   const balance = d.debt ? parseUf(d.debt) : null;
   if (balance === null) return null;
   const id = (d.credit ?? "").trim();
-  const loan: LoanBalance = { label: `Mutuo Hipotecario${id ? ` ****${id.slice(-4)}` : ""}`, currency: "UF", balance };
+  // El número completo: los créditos pueden terminar igual (2017060831A025 y 2021070617A025).
+  const loan: LoanBalance = { label: `Mutuo Hipotecario${id ? ` ${id}` : ""}`, currency: "UF", balance };
   const n = d.installment ? /^(\d+)\s*\/\s*(\d+)$/.exec(d.installment.trim()) : null;
   if (n) loan.installments = `${n[1]}/${n[2]}`;
   return loan;
+}
+
+/** El número de crédito de una tarjeta de "Mis productos" (`"Crédito 2021070617A025"`); `null` si no aparece. */
+export function cardCredit(text: string): string | null {
+  return /Cr[eé]dito(?:\s*N°)?:?\s*([0-9]{6,}[0-9A-Z]*)/i.exec(text)?.[1] ?? null;
+}
+
+/**
+ * Cuál "Ver mi producto" abrir: el primero cuyo crédito todavía no se leyó. Si las tarjetas no muestran el
+ * número, se sigue por orden (`i`). `-1` si ya se leyeron todos.
+ */
+export function nextProduct(credits: (string | null)[], seen: Set<string>, i: number): number {
+  if (credits.some((c) => c !== null)) return credits.findIndex((c) => c !== null && !seen.has(c));
+  return i < credits.length ? i : -1;
 }
 
 /** El marco donde el portal muestra los productos (o la página, si algún día deja de usarlo). */
@@ -61,25 +75,35 @@ async function dismissPopup(page: Page): Promise<void> {
 }
 
 /**
- * Los "Ver mi producto" de cada crédito. No son enlaces ni botones, así que se busca el elemento más profundo
- * con ese texto y se pincha con el mouse.
+ * Los "Ver mi producto" de cada crédito, con el texto de su tarjeta. No son enlaces ni botones, así que se
+ * busca el elemento más profundo con ese texto y se pincha con el mouse.
  */
-async function productLinks(page: Page) {
+async function productLinks(page: Page): Promise<{ el: ElementHandle<Element>; card: string }[]> {
   const frame = portalFrame(page);
-  const count = await frame
+  const cards = await frame
     .evaluate(() => {
       const starts = (e: Element) => (e.textContent ?? "").trim().startsWith("Ver mi producto");
       const deepest = Array.from(document.querySelectorAll("body *")).filter((e) => starts(e) && !Array.from(e.children).some(starts));
-      deepest.forEach((e, i) => e.setAttribute("data-mf-producto", String(i)));
-      return deepest.length;
+      return deepest.map((e, i) => {
+        e.setAttribute("data-mf-producto", String(i));
+        // La tarjeta: el primer contenedor que además del enlace tiene el número de crédito.
+        let box: Element | null = e;
+        for (let k = 0; box && k < 6 && !/Cr[eé]dito/i.test(box.textContent ?? ""); k++) box = box.parentElement;
+        return (box as HTMLElement | null)?.innerText ?? "";
+      });
     })
-    .catch(() => 0);
+    .catch(() => [] as string[]);
   const links = [];
-  for (let i = 0; i < count; i++) {
+  for (const [i, card] of cards.entries()) {
     const el = await frame.$(`[data-mf-producto="${i}"]`);
-    if (el) links.push(el);
+    if (el) links.push({ el, card });
   }
   return links;
+}
+
+/** La lista de productos ya cargada (no el esqueleto gris ni el detalle de un crédito). */
+function isProductList(text: string): boolean {
+  return /Ver mi producto/i.test(text) && /Cr[eé]dito/i.test(text) && !/Deuda pendiente/i.test(text);
 }
 
 function readDetail(text: string): { credit: string | null; debt: string | null; installment: string | null } {
@@ -144,11 +168,12 @@ async function scrapeMetlife(session: BrowserSession, options: ScraperOptions): 
   for (let i = 0; i < count; i++) {
     progress(`Leyendo crédito ${i + 1} de ${count}…`);
     const links = await productLinks(page);
-    if (!links[i]) {
+    const next = nextProduct(links.map((l) => cardCredit(l.card)), seen, i);
+    if (next < 0) {
       debugLog.push(`   No encontré el producto ${i + 1} (hay ${links.length})`);
       break;
     }
-    await links[i].click().catch(() => {});
+    await links[next].el.click().catch(() => {});
     const text = await waitForText(page, (t) => metlifeLoan(readDetail(t)) !== null, LOAD_TIMEOUT);
     await screenshot(page, `04-credito-${i + 1}`);
     const detail = text ? readDetail(text) : null;
@@ -158,11 +183,11 @@ async function scrapeMetlife(session: BrowserSession, options: ScraperOptions): 
       loans.push(loan);
     }
     debugLog.push(`   Crédito ${i + 1}: ${loan ? "deuda leída" : "sin deuda pendiente"}`);
-    // De vuelta a "Mis productos" para abrir el siguiente: se vuelve a cargar la página de productos (el
-    // enlace "MIS PRODUCTOS" no siempre la abre).
+    // De vuelta a "Mis productos" para abrir el siguiente, con el botón atrás del navegador: el enlace
+    // "MIS PRODUCTOS" no siempre la abre, y al recargar la página el portal muestra otra lista que no carga.
     if (i < count - 1) {
-      await page.goto(PRODUCTS_URL, { waitUntil: "domcontentloaded", timeout: LOAD_TIMEOUT }).catch(() => {});
-      if (!(await waitForText(page, (t) => /Ver mi producto/i.test(t), LOAD_TIMEOUT))) {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: LOAD_TIMEOUT }).catch(() => {});
+      if (!(await waitForText(page, isProductList, LOAD_TIMEOUT))) {
         debugLog.push("   No pude volver a Mis productos");
         break;
       }
