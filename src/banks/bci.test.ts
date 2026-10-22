@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { normalizeBciApiMovements } from "./bci.js";
+import { normalizeBciApiMovements, parseBciCredits } from "./bci.js";
 
 describe("normalizeBciApiMovements", () => {
   it("returns empty array for empty captures", () => {
@@ -88,5 +88,34 @@ describe("normalizeBciApiMovements", () => {
     const result = normalizeBciApiMovements([makeCapture("A"), makeCapture("B")]);
     expect(result).toHaveLength(2);
     expect(result.map((m) => m.description)).toEqual(["A", "B"]);
+  });
+});
+
+describe("parseBciCredits", () => {
+  const header = ["Nº de Crédito", "Descripción", "Tipo", "Monto", "Saldo", "Cuota", "Vencimiento", "Nº Cuotas"];
+
+  it("lee cada crédito con su saldo en pesos o en UF", () => {
+    const rows = [
+      ["D10300240687", "PAPCUO/TASFJ", "D", "$ 29.385.203", "$ 28.383.706", "$ 484.639", "05/11/2026", "5 de 80"],
+      ["D36500997028", "COMISION CAE", "D", "UF 7,12", "UF 2,08", "UF 0,06", "10/11/2026", "142 de 180"],
+      ["D36500997029", "ARANCEL CFTF", "D", "UF 352,65", "UF 102,50", "UF 2,87", "10/11/2026", "142 de 180"],
+    ];
+    expect(parseBciCredits(header, rows)).toEqual([
+      { label: "PAPCUO/TASFJ ****0687", currency: "CLP", balance: 28383706, installmentAmount: 484639, nextDueDate: "05-11-2026", installments: "5/80" },
+      { label: "COMISION CAE ****7028", currency: "UF", balance: 2.08, installmentAmount: 0.06, nextDueDate: "10-11-2026", installments: "142/180" },
+      { label: "ARANCEL CFTF ****7029", currency: "UF", balance: 102.5, installmentAmount: 2.87, nextDueDate: "10-11-2026", installments: "142/180" },
+    ]);
+  });
+
+  it("ignora filas sin saldo legible y solo créditos directos", () => {
+    const rows = [
+      ["D1", "X", "D", "$ 1", "—", "$ 1", "", ""],
+      ["I22223333", "AVAL", "I", "$ 100", "$ 50", "$ 10", "01/01/2027", "1 de 2"],
+    ];
+    expect(parseBciCredits(header, rows)).toEqual([]);
+  });
+
+  it("sin la columna Saldo no inventa nada", () => {
+    expect(parseBciCredits(["A", "B"], [["1", "2"]])).toEqual([]);
   });
 });

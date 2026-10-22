@@ -1,5 +1,5 @@
 import type { Page, Frame } from "puppeteer-core";
-import type { AccountBalance, BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import type { AccountBalance, BankMovement, BankScraper, CreditCardBalance, LoanBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE, type MovementSource } from "../types.js";
 import { closePopups, delay, formatRut, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -389,6 +389,89 @@ async function waitForTableChange(
 
 // ─── Main scrape function ────────────────────────────────────────
 
+/** `"$ 28.383.706"` → pesos; `"UF 102,50"` → UF. Lo demás → `null`. */
+function parseCreditAmount(text: string): { currency: "CLP" | "UF"; value: number } | null {
+  const t = text.trim();
+  const uf = /^UF\s*([\d.]+(?:,\d+)?)$/i.exec(t);
+  if (uf) return { currency: "UF", value: Number(uf[1].replace(/\./g, "").replace(",", ".")) };
+  const clp = /^\$\s*([\d.]+)$/.exec(t);
+  if (clp) return { currency: "CLP", value: Number(clp[1].replace(/\./g, "")) };
+  return null;
+}
+
+/**
+ * Filas de "Créditos › Créditos de Consumo › Mis Créditos". Solo los créditos directos (Tipo D): los
+ * indirectos (I) son avales, deuda de otra persona.
+ */
+export function parseBciCredits(header: string[], rows: string[][]): LoanBalance[] {
+  const col = (name: RegExp) => header.findIndex((h) => name.test(h.trim()));
+  const [num, desc, tipo, saldo, cuota, venc, cuotas] = [/cr[eé]dito/i, /descripci/i, /^tipo/i, /^saldo/i, /^cuota$/i, /vencimiento/i, /cuotas/i].map(col);
+  if (saldo < 0) return [];
+  return rows.flatMap((r) => {
+    if (tipo >= 0 && r[tipo]?.trim().toUpperCase() !== "D") return [];
+    const balance = parseCreditAmount(r[saldo] ?? "");
+    if (!balance) return [];
+    const id = (r[num] ?? "").trim();
+    const label = [(r[desc] ?? "").trim(), id ? `****${id.slice(-4)}` : ""].filter(Boolean).join(" ") || "Crédito";
+    const loan: LoanBalance = { label, currency: balance.currency, balance: balance.value };
+    const installment = cuota >= 0 ? parseCreditAmount(r[cuota] ?? "") : null;
+    if (installment && installment.currency === balance.currency) loan.installmentAmount = installment.value;
+    const due = venc >= 0 ? /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((r[venc] ?? "").trim()) : null;
+    if (due) loan.nextDueDate = `${due[1]}-${due[2]}-${due[3]}`;
+    const n = cuotas >= 0 ? /^(\d+)\s*de\s*(\d+)$/i.exec((r[cuotas] ?? "").trim()) : null;
+    if (n) loan.installments = `${n[1]}/${n[2]}`;
+    return [loan];
+  });
+}
+
+/** Créditos › Mis Créditos. `undefined` si no se pudo llegar a la tabla (no es lo mismo que no tener créditos). */
+async function scrapeCredits(page: Page, debugLog: string[]): Promise<LoanBalance[] | undefined> {
+  // La pestaña "Créditos" de arriba no siempre es un <a>: se busca por su título.
+  const tab = await page.evaluate(() => {
+    const el = document.querySelector('[title="Créditos"]') as HTMLElement | null;
+    el?.click();
+    return Boolean(el);
+  });
+  if (!tab) {
+    debugLog.push("  Créditos: no encontré la pestaña");
+    return undefined;
+  }
+  await delay(3000);
+  const opened = await page
+    .waitForFunction(() => {
+      const a = document.querySelector('a[title="Mis Créditos"]') as HTMLElement | null;
+      if (a) a.click();
+      return Boolean(a);
+    }, { timeout: 15000 })
+    .then(() => true, () => false);
+  if (!opened) {
+    debugLog.push("  Créditos: no encontré Mis Créditos");
+    return undefined;
+  }
+  const handle = await page
+    .waitForFunction(() => {
+      for (const t of Array.from(document.querySelectorAll("table"))) {
+        const header = Array.from(t.querySelectorAll("th")).map((h) => h.textContent?.trim() ?? "");
+        if (header.some((h) => /^saldo$/i.test(h)) && header.some((h) => /cr[eé]dito/i.test(h))) {
+          const rows = Array.from(t.querySelectorAll("tbody tr")).map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent?.trim() ?? ""));
+          return { header, rows };
+        }
+      }
+      // Sin créditos la página lo dice en vez de mostrar la tabla.
+      if (/no (registra|tiene|posee) cr[eé]ditos/i.test(document.body?.innerText ?? "")) return { header: ["Saldo"], rows: [] };
+      return null;
+    }, { timeout: 20000 })
+    .catch(() => null);
+  const table = handle ? ((await handle.jsonValue()) as { header: string[]; rows: string[][] }) : null;
+  if (!table) {
+    debugLog.push("  Créditos: la tabla no cargó");
+    return undefined;
+  }
+  const loans = parseBciCredits(table.header, table.rows);
+  debugLog.push(`  Créditos: ${table.rows.length} filas, ${loans.length} créditos directos`);
+  return loans;
+}
+
 async function scrapeBci(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
   const { rut, password, saveScreenshots: doScreenshots } = options;
   const { page, debugLog, screenshot: doSave } = session;
@@ -524,6 +607,11 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
     }
   }
 
+  // Créditos de consumo: se leen en la misma sesión, para no pedir BCI Pass otra vez.
+  progress("Leyendo créditos de consumo...");
+  debugLog.push("7. Navigating to credits...");
+  const loans = await scrapeCredits(page, debugLog).catch(() => undefined);
+
   const deduplicated = deduplicateMovements(allMovements);
   debugLog.push(`  Total: ${deduplicated.length} unique movements`);
   progress(`Listo — ${deduplicated.length} movimientos totales`);
@@ -531,7 +619,7 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64" })) as string : undefined;
 
   const accounts: AccountBalance[] = [{ balance, movements: deduplicated }];
-  return { success: true, bank, accounts, creditCards: creditCards.length > 0 ? creditCards : undefined, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, accounts, creditCards: creditCards.length > 0 ? creditCards : undefined, loans, screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

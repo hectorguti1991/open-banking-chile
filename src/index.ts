@@ -71,6 +71,7 @@ export type {
   ScrapeResult,
   ScraperOptions,
   CreditCardBalance,
+  LoanBalance,
 } from "./types.js";
 
 export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";

@@ -92,6 +92,22 @@ export interface CreditCardBalance {
   movements?: BankMovement[];
 }
 
+/** Saldo de un crédito (consumo, CAE): lo que se debe hoy */
+export interface LoanBalance {
+  /** Etiqueta del crédito (ej: "PAPCUO/TASFJ ****0687") */
+  label: string;
+  /** Moneda del saldo */
+  currency: "CLP" | "UF";
+  /** Saldo adeudado (pesos enteros o UF con decimales) */
+  balance: number;
+  /** Valor de la cuota, en la misma moneda */
+  installmentAmount?: number;
+  /** Próximo vencimiento (dd-mm-yyyy) */
+  nextDueDate?: string;
+  /** Cuota actual de un total (ej: "5/80") */
+  installments?: string;
+}
+
 /** Resultado del scraping */
 export interface ScrapeResult {
   /** Si el scraping fue exitoso */
@@ -102,6 +118,8 @@ export interface ScrapeResult {
   accounts?: AccountBalance[];
   /** Saldos de tarjetas de crédito */
   creditCards?: CreditCardBalance[];
+  /** Créditos de consumo y otros préstamos. Sin el campo, no se pudieron leer (no es lo mismo que una lista vacía). */
+  loans?: LoanBalance[];
   /** @deprecated Use accounts[].movements instead. Kept for compatibility during migration. */
   movements?: BankMovement[];
   /** @deprecated Use accounts[].balance instead. Kept for compatibility during migration. */
