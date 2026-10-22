@@ -12,6 +12,7 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 
 const LOGIN_URL = "https://portaldeclientes.metlife.cl/PIP/login";
 const PORTAL_HOST = "portaldeclientes.metlife.cl";
+const PRODUCTS_URL = "https://portaldeclientes.metlife.cl/PIP/home/productos";
 const LOGIN_TIMEOUT = 60_000;
 const LOAD_TIMEOUT = 45_000;
 
@@ -143,7 +144,10 @@ async function scrapeMetlife(session: BrowserSession, options: ScraperOptions): 
   for (let i = 0; i < count; i++) {
     progress(`Leyendo crédito ${i + 1} de ${count}…`);
     const links = await productLinks(page);
-    if (!links[i]) break;
+    if (!links[i]) {
+      debugLog.push(`   No encontré el producto ${i + 1} (hay ${links.length})`);
+      break;
+    }
     await links[i].click().catch(() => {});
     const text = await waitForText(page, (t) => metlifeLoan(readDetail(t)) !== null, LOAD_TIMEOUT);
     await screenshot(page, `04-credito-${i + 1}`);
@@ -154,22 +158,21 @@ async function scrapeMetlife(session: BrowserSession, options: ScraperOptions): 
       loans.push(loan);
     }
     debugLog.push(`   Crédito ${i + 1}: ${loan ? "deuda leída" : "sin deuda pendiente"}`);
-    // De vuelta a "Mis productos" para abrir el siguiente.
+    // De vuelta a "Mis productos" para abrir el siguiente: se vuelve a cargar la página de productos (el
+    // enlace "MIS PRODUCTOS" no siempre la abre).
     if (i < count - 1) {
-      const back = await portalFrame(page)
-        .evaluateHandle(() => {
-          const all = Array.from(document.querySelectorAll("body *"));
-          return all.find((e) => e.childElementCount === 0 && (e.textContent ?? "").trim().toUpperCase() === "MIS PRODUCTOS") ?? null;
-        })
-        .catch(() => null);
-      const el = back?.asElement();
-      if (el) await (el as ElementHandle<Element>).click().catch(() => {});
-      await waitForText(page, (t) => /Ver mi producto/i.test(t), LOAD_TIMEOUT);
+      await page.goto(PRODUCTS_URL, { waitUntil: "domcontentloaded", timeout: LOAD_TIMEOUT }).catch(() => {});
+      if (!(await waitForText(page, (t) => /Ver mi producto/i.test(t), LOAD_TIMEOUT))) {
+        debugLog.push("   No pude volver a Mis productos");
+        break;
+      }
       await dismissPopup(page);
     }
   }
 
   if (loans.length === 0) return fail("No encontré la deuda pendiente de tus créditos MetLife.");
+  // Una lectura a medias borraría en la app el crédito que faltó: mejor fallar y conservar lo anterior.
+  if (loans.length < count) return fail(`Leí ${loans.length} de ${count} créditos de MetLife. Intenta de nuevo.`);
   progress("Listo");
   return { success: true, bank: "metlife", accounts: [], loans, debug: debugLog.join("\n") };
 }
