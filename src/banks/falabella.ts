@@ -835,7 +835,17 @@ async function paginateCmrMovements(page: Page, source: MovementSource, debugLog
     debugLog.push(`  [CMR pag] page ${i + 1}: ${result.rows.length} rows`);
     all.push(...result.rows);
 
-    if (!result.clicked) break;
+    // Con una página llena, el botón "siguiente" a veces todavía no está habilitado: se reintenta antes de
+    // dar la lista por terminada (cortarla deja fuera las compras más antiguas).
+    let clicked = result.clicked;
+    for (let retry = 0; !clicked && result.rows.length >= 20 && retry < 3; retry++) {
+      await delay(1500);
+      clicked = await clickNextPage(page, host);
+    }
+    if (!clicked) {
+      if (result.rows.length >= 20) debugLog.push(`  [CMR pag] no next button after page ${i + 1}`);
+      break;
+    }
 
     // Wait for content to change — use the same "fecha de compra" preference as above
     const prevRow = result.firstRow;
@@ -881,7 +891,10 @@ async function paginateCmrMovements(page: Page, source: MovementSource, debugLog
       { timeout: 15000 },
     ).then(() => true, () => false);
 
-    if (!changed) break;
+    if (!changed) {
+      debugLog.push(`  [CMR pag] page ${i + 2} did not load`);
+      break;
+    }
     await delay(300);
   }
 
@@ -893,6 +906,42 @@ async function paginateCmrMovements(page: Page, source: MovementSource, debugLog
       installments: normalizeInstallments(m.installments),
     })),
   );
+}
+
+/** Pincha "siguiente" en la tabla de la CMR (dentro de shadow DOM). `false` si no hay botón habilitado. */
+async function clickNextPage(page: Page, host: string): Promise<boolean> {
+  return page
+    .evaluate((h: string) => {
+      const el = document.querySelector(h) as Element & { shadowRoot?: ShadowRoot };
+      const topRoot = el?.shadowRoot || document;
+      function collectAll(root: ShadowRoot | Element | Document): Array<ShadowRoot | Element | Document> {
+        const found: Array<ShadowRoot | Element | Document> = [root];
+        for (const child of Array.from((root as ParentNode).querySelectorAll("*"))) {
+          const sr = (child as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
+          if (sr) found.push(...collectAll(sr));
+        }
+        return found;
+      }
+      for (const root of collectAll(topRoot)) {
+        for (const btn of Array.from((root as ParentNode).querySelectorAll<HTMLButtonElement>(".btn-pagination, button"))) {
+          if (btn.disabled) continue;
+          const img = btn.querySelector("img");
+          const imgAlt = (img?.getAttribute("alt") || "").toLowerCase();
+          const imgSrc = img?.getAttribute("src") || "";
+          const label = (btn.getAttribute("aria-label") || btn.innerText || "").toLowerCase();
+          const isNext =
+            imgAlt.includes("avanzar") || imgAlt.includes("siguiente") || imgAlt.includes("next") ||
+            imgSrc.includes("right-arrow") || imgSrc.includes("arrow-right") || imgSrc.includes("next") ||
+            label.includes("siguiente") || label.includes("next") || label.includes("avanzar");
+          if (isNext) {
+            btn.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    }, host)
+    .catch(() => false);
 }
 
 // ─── Main scrape function ────────────────────────────────────────
