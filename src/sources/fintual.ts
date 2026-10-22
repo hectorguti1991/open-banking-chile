@@ -10,6 +10,7 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 // del sitio. Con un perfil de Chrome persistente la sesión se recuerda; cuando expira, Fintual manda un
 // código por correo y el usuario lo escribe en la ventana, que por eso siempre es visible.
 
+// Sin sesión, /app/goals lleva a https://fintual.cl/f/sign-in/ (correo, clave y "Entrar", en un paso).
 const GOALS_URL = "https://fintual.cl/app/goals";
 const CODE_TIMEOUT = 5 * 60_000;
 
@@ -57,6 +58,18 @@ async function fillLogin(page: Page, email: string, password: string, debugLog: 
   }
   await passwordInput.type(password, { delay: 40 });
   await passwordInput.press("Enter");
+  await delay(4000);
+  // Si Enter no envió el formulario (sigue la clave escrita en pantalla), pincha "Entrar".
+  const stillThere = await page.$eval('input[type="password"]', (el) => (el as HTMLInputElement).value.length > 0).catch(() => false);
+  if (stillThere) {
+    debugLog.push("   Enter no envió el formulario: pincho Entrar");
+    for (const b of await page.$$("button")) {
+      if ((await b.evaluate((el) => el.textContent?.trim())) === "Entrar") {
+        await b.click().catch(() => {});
+        break;
+      }
+    }
+  }
   return true;
 }
 
