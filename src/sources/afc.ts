@@ -11,6 +11,8 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 
 const LOGIN_URL = "https://personas.afc.cl/auth/login";
 const LOGIN_TIMEOUT = 60_000;
+// El campo, no su contenedor: la página usa el mismo id en los dos.
+const RUT_INPUT = "input#rut";
 
 /** `"12.345.678"` → `12345678`; oculto (`"****"`) o vacío → `null`. */
 export function parseAfcAmount(text: string): number | null {
@@ -20,7 +22,7 @@ export function parseAfcAmount(text: string): number | null {
 
 /** Lo que quedó escrito en el campo RUT. */
 async function rutValue(page: Page): Promise<string> {
-  return page.$eval("#rut", (el) => (el as HTMLInputElement).value).catch(() => "");
+  return page.$eval(RUT_INPUT, (el) => (el as HTMLInputElement).value ?? "").catch(() => "");
 }
 
 /**
@@ -31,15 +33,15 @@ async function typeRut(page: Page, rut: string, debugLog: string[]): Promise<boo
   const clean = rut.replace(/[^0-9kK]/g, "").toUpperCase();
   const attempts = [clean, clean, formatRut(clean)];
   for (const [i, text] of attempts.entries()) {
-    const input = await page.$("#rut");
+    const input = await page.$(RUT_INPUT);
     if (!input) return false;
     await input.click({ clickCount: 3 }).catch(() => {});
     await page.keyboard.press("Backspace").catch(() => {});
     await input.type(text, { delay: 60 });
     await delay(700);
     const value = await rutValue(page);
-    if (value.replace(/[^0-9kK]/g, "").length >= clean.length - 1) return true;
-    debugLog.push(`   El RUT no quedó escrito (intento ${i + 1}, largo ${value.length})`);
+    if ((value ?? "").replace(/[^0-9kK]/g, "").length >= clean.length - 1) return true;
+    debugLog.push(`   El RUT no quedó escrito (intento ${i + 1}, largo ${(value ?? "").length})`);
     await delay(1500);
   }
   return false;
@@ -82,7 +84,7 @@ async function scrapeAfc(session: BrowserSession, options: ScraperOptions): Prom
   await screenshot(page, "01-ingreso");
 
   if (!page.url().includes("/home")) {
-    if (!(await page.waitForSelector("#rut", { visible: true, timeout: 15_000 }).catch(() => null))) {
+    if (!(await page.waitForSelector(RUT_INPUT, { visible: true, timeout: 15_000 }).catch(() => null))) {
       return fail("No encontré el formulario de ingreso de AFC.");
     }
     // La página se vuelve a dibujar al abrir y borra lo que se escribió antes: se espera y se revisa.
