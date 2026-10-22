@@ -155,3 +155,18 @@ export function cardLast4(label: string): string | null {
   const m = label.match(/\*{2,}\s*(\d{4})\b/);
   return m ? m[1] : null;
 }
+
+/**
+ * Pestaña "Saldo" (`TRANS=vt_NuevoSaldoVisaEnc`): cupo nacional en pesos enteros, como texto con signo y
+ * ceros a la izquierda (`"      +0000002949976"`). `null` si no viene el cupo utilizado.
+ */
+export function parseCardBalanceJson(json: unknown): { used: number; available: number; total: number } | null {
+  const d = (json as { lstNuevoSaldoVisaEnc?: Record<string, unknown> } | null)?.lstNuevoSaldoVisaEnc;
+  const num = (v: unknown): number | null => {
+    const t = typeof v === "string" ? v.trim() : "";
+    return /^[+-]?\d+$/.test(t) ? Number(t) : null;
+  };
+  const used = num(d?.cupoUtilizadoNacional);
+  if (used === null) return null;
+  return { used, available: num(d?.cupoDisponibleNacional) ?? 0, total: num(d?.cupoTotalNacional) ?? 0 };
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { BankMovement } from "../types.js";
-import { cardBillingDates, cardLast4, linkUnbilledInstallments, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4 } from "./scotiabank-cards.js";
+import { cardBillingDates, cardLast4, linkUnbilledInstallments, parseBilledCardJson, parseCardBalanceJson, parseUnbilledCardJson, unbilledCardLast4 } from "./scotiabank-cards.js";
 
 // Shapes captured from the site's /cgi-bin/transac/dotrxajax responses (values invented).
 const unbilled = { lstUltimosMovVisaEnc: {
@@ -107,5 +107,20 @@ describe("linkUnbilledInstallments", () => {
   it("leaves other movements alone", () => {
     const other = cuota({ description: "METLIFE CHILE SEGUROS", amount: -873799, date: "10-10-2026" });
     expect(linkUnbilledInstallments([other], [billedCuota])).toEqual([other]);
+  });
+});
+
+describe("parseCardBalanceJson", () => {
+  it("lee el cupo nacional en pesos enteros", () => {
+    const json = { lstNuevoSaldoVisaEnc: {
+      cupoDisponibleNacional: "      +0000005511024", cupoTotalNacional: "     000000008461000", cupoUtilizadoNacional: "      +0000002949976",
+      cupoUtilizadoInternacional: "    +000000000000000", numeroTarjeta: "1234",
+    } };
+    expect(parseCardBalanceJson(json)).toEqual({ used: 2949976, available: 5511024, total: 8461000 });
+  });
+
+  it("sin datos no inventa un cupo", () => {
+    expect(parseCardBalanceJson(null)).toBeNull();
+    expect(parseCardBalanceJson({ lstNuevoSaldoVisaEnc: { cupoUtilizadoNacional: "" } })).toBeNull();
   });
 });

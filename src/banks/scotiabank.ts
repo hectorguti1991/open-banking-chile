@@ -8,7 +8,7 @@ import { fillRut, fillPassword, clickSubmit, detectLoginError, leftLoginForm } f
 import { dismissBanners } from "../actions/navigation.js";
 import { describeJsonShape, parseTransactionsJson } from "./scotiabank-api.js";
 import {
-  cardBillingDates, cardLast4, linkUnbilledInstallments, parseBilledCardJson, parseUnbilledCardJson, unbilledCardLast4,
+  cardBillingDates, cardLast4, linkUnbilledInstallments, parseBilledCardJson, parseCardBalanceJson, parseUnbilledCardJson, unbilledCardLast4,
 } from "./scotiabank-cards.js";
 
 // ─── Scotiabank-specific constants ───────────────────────────────
@@ -867,7 +867,10 @@ async function scrapeCreditCards(page: Page, debugLog: string[], progress: (s: s
         continue;
       }
       seen.push(fingerprint);
-      cards.push({ label, movements: [...unbilled, ...billed] });
+      // Pestaña "Saldo": el cupo utilizado es lo que se debe en la tarjeta (incluye las cuotas por pagar).
+      const national = parseCardBalanceJson(await open("saldo", last4, "vt_NuevoSaldoVisaEnc"));
+      debugLog.push(`  ${card}: ${national ? "cupo leído" : "sin cupo"}`);
+      cards.push({ label, movements: [...unbilled, ...billed], ...(national ? { national } : {}) });
     }
   } catch (e) {
     debugLog.push(`  Credit cards failed: ${e instanceof Error ? e.message : String(e)}`);
