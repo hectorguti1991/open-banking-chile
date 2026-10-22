@@ -31,6 +31,7 @@ const DEFAULT_ARGS = [
   "--disable-blink-features=AutomationControlled",
 ];
 
+// Respaldo si Chrome no informa su identificación. Lo normal es usar la real (ver launchBrowser).
 const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -90,7 +91,11 @@ export async function launchBrowser(
   const page = await browser.newPage();
   const vp = viewport || { width: 1280, height: 900 };
   await page.setViewport(vp);
-  await page.setUserAgent(DEFAULT_UA);
+  // La versión real del Chrome instalado, sin la marca "HeadlessChrome". Una versión fija distinta de la
+  // real (por ejemplo 131 con Chrome 155) no calza con lo que el navegador informa por su cuenta, y los
+  // bancos con control de bots (Scotiabank) dejan de aceptar el ingreso.
+  const realUa = await browser.userAgent().catch(() => "");
+  await page.setUserAgent(realUa ? realUa.replace("HeadlessChrome", "Chrome") : DEFAULT_UA);
 
   // Hide automation signals
   await page.evaluateOnNewDocument(() => {
