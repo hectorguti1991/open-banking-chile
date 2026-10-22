@@ -11,6 +11,7 @@ import scotiabank from "./banks/scotiabank.js";
 import type { BankScraper } from "./types.js";
 import cencosud from "./banks/cencosud.js";
 import afpuno from "./sources/afpuno.js";
+import fintual from "./sources/fintual.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -47,6 +48,7 @@ export function getBank(id: string): BankScraper | undefined {
  */
 export const sources: Record<string, BankScraper> = {
   afpuno,
+  fintual,
 };
 
 /** Lista de fuentes de saldos soportadas */
@@ -87,3 +89,4 @@ export { default as bancosecurity } from "./banks/bancosecurity.js";
 export { default as scotiabank } from "./banks/scotiabank.js";
 export { default as cencosud } from "./banks/cencosud.js";
 export { default as afpuno } from "./sources/afpuno.js";
+export { default as fintual } from "./sources/fintual.js";
