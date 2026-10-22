@@ -13,6 +13,7 @@ import cencosud from "./banks/cencosud.js";
 import afpuno from "./sources/afpuno.js";
 import fintual from "./sources/fintual.js";
 import racional from "./sources/racional.js";
+import afc from "./sources/afc.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -51,6 +52,7 @@ export const sources: Record<string, BankScraper> = {
   afpuno,
   fintual,
   racional,
+  afc,
 };
 
 /** Lista de fuentes de saldos soportadas */
@@ -94,3 +96,4 @@ export { default as cencosud } from "./banks/cencosud.js";
 export { default as afpuno } from "./sources/afpuno.js";
 export { default as fintual } from "./sources/fintual.js";
 export { default as racional } from "./sources/racional.js";
+export { default as afc } from "./sources/afc.js";
