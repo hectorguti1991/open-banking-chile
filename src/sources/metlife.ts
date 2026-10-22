@@ -1,4 +1,4 @@
-import type { Frame, Page } from "puppeteer-core";
+import type { ElementHandle, Frame, Page } from "puppeteer-core";
 import type { BankScraper, LoanBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { delay } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -59,11 +59,24 @@ async function dismissPopup(page: Page): Promise<void> {
   await delay(800);
 }
 
+/**
+ * Los "Ver mi producto" de cada crédito. No son enlaces ni botones, así que se busca el elemento más profundo
+ * con ese texto y se pincha con el mouse.
+ */
 async function productLinks(page: Page) {
   const frame = portalFrame(page);
+  const count = await frame
+    .evaluate(() => {
+      const starts = (e: Element) => (e.textContent ?? "").trim().startsWith("Ver mi producto");
+      const deepest = Array.from(document.querySelectorAll("body *")).filter((e) => starts(e) && !Array.from(e.children).some(starts));
+      deepest.forEach((e, i) => e.setAttribute("data-mf-producto", String(i)));
+      return deepest.length;
+    })
+    .catch(() => 0);
   const links = [];
-  for (const el of await frame.$$("a, button")) {
-    if ((await el.evaluate((e) => e.textContent?.trim() ?? "")).startsWith("Ver mi producto")) links.push(el);
+  for (let i = 0; i < count; i++) {
+    const el = await frame.$(`[data-mf-producto="${i}"]`);
+    if (el) links.push(el);
   }
   return links;
 }
@@ -143,13 +156,14 @@ async function scrapeMetlife(session: BrowserSession, options: ScraperOptions): 
     debugLog.push(`   Crédito ${i + 1}: ${loan ? "deuda leída" : "sin deuda pendiente"}`);
     // De vuelta a "Mis productos" para abrir el siguiente.
     if (i < count - 1) {
-      const back = (await portalFrame(page).$$("a, button")).filter(Boolean);
-      for (const el of back) {
-        if ((await el.evaluate((e) => e.textContent?.trim().toUpperCase() ?? "")) === "MIS PRODUCTOS") {
-          await el.click().catch(() => {});
-          break;
-        }
-      }
+      const back = await portalFrame(page)
+        .evaluateHandle(() => {
+          const all = Array.from(document.querySelectorAll("body *"));
+          return all.find((e) => e.childElementCount === 0 && (e.textContent ?? "").trim().toUpperCase() === "MIS PRODUCTOS") ?? null;
+        })
+        .catch(() => null);
+      const el = back?.asElement();
+      if (el) await (el as ElementHandle<Element>).click().catch(() => {});
       await waitForText(page, (t) => /Ver mi producto/i.test(t), LOAD_TIMEOUT);
       await dismissPopup(page);
     }
