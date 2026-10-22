@@ -1,4 +1,4 @@
-import type { Page } from "puppeteer-core";
+import type { ElementHandle, Page } from "puppeteer-core";
 import type { BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
 import { delay } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -37,6 +37,14 @@ async function clickByText(page: Page, selector: string, text: string): Promise<
   );
 }
 
+async function findSubmit(page: Page): Promise<ElementHandle<HTMLButtonElement> | null> {
+  for (const b of await page.$$("#form-login button")) {
+    const text = await b.evaluate((el) => el.textContent?.trim() ?? "");
+    if (text === "Iniciar sesión") return b as ElementHandle<HTMLButtonElement>;
+  }
+  return null;
+}
+
 /** Texto del monto que sigue al título "Total ahorrado", o `null` si todavía no aparece. */
 async function readTotalText(page: Page): Promise<string | null> {
   return page.evaluate(() => {
@@ -45,16 +53,21 @@ async function readTotalText(page: Page): Promise<string | null> {
   });
 }
 
-async function waitForTotal(page: Page, timeout: number): Promise<{ text: string | null; amount: number | null }> {
-  const until = Date.now() + timeout;
+/**
+ * Lee el monto hasta que tenga un saldo. Mientras carga, la página muestra `$0`: eso no es un saldo y se
+ * sigue esperando. Con el monto oculto (sin cifras) no tiene sentido esperar.
+ */
+export async function waitForTotal(
+  read: () => Promise<string | null>,
+  opts: { attempts: number; sleep: () => Promise<void> },
+): Promise<{ text: string | null; amount: number | null }> {
   let text: string | null = null;
-  while (Date.now() < until) {
-    text = await readTotalText(page).catch(() => null);
+  for (let i = 0; i < opts.attempts; i++) {
+    text = await read().catch(() => null);
     const amount = text ? parseTotalAhorrado(text) : null;
-    if (amount !== null) return { text, amount };
-    // Con el monto oculto, el texto aparece sin cifras: no tiene sentido seguir esperando.
+    if (amount !== null && amount > 0) return { text, amount };
     if (text && !/\d/.test(text)) return { text, amount: null };
-    await delay(1000);
+    await opts.sleep();
   }
   return { text, amount: null };
 }
@@ -93,11 +106,29 @@ async function scrapeAfpUno(session: BrowserSession, options: ScraperOptions): P
   await page.type("#form-login #password", options.password, { delay: 50 });
   await delay(500);
   await screenshot(page, "03-formulario");
-  if (!(await clickByText(page, "#form-login button", "Iniciar sesión"))) return fail("No encontré el botón Iniciar sesión.");
+  // El botón se habilita cuando la página valida el formulario. Un clic por DOM (`el.click()`) no
+  // alcanza: hace falta un clic de mouse real sobre el botón habilitado.
+  const submit = await findSubmit(page);
+  if (!submit) return fail("No encontré el botón Iniciar sesión.");
+  await page
+    .waitForFunction((b) => !(b as HTMLButtonElement).disabled, { timeout: 10_000 }, submit)
+    .catch(() => debugLog.push("   El botón siguió deshabilitado; pruebo igual"));
+  await submit.click().catch(() => debugLog.push("   No se pudo hacer clic en el botón"));
 
   debugLog.push("4. Esperando el portal...");
   const until = Date.now() + LOGIN_TIMEOUT;
-  while (!page.url().includes(PORTAL_HOST) && Date.now() < until) await delay(1000);
+  const retryAt = Date.now() + 10_000;
+  let retried = false;
+  while (!page.url().includes(PORTAL_HOST) && Date.now() < until) {
+    if (!retried && Date.now() > retryAt) {
+      // Si el clic no avanzó, Enter en la clave envía el formulario.
+      retried = true;
+      debugLog.push("   Sigue en el formulario: presiono Enter");
+      await page.focus("#form-login #password").catch(() => {});
+      await page.keyboard.press("Enter").catch(() => {});
+    }
+    await delay(1000);
+  }
   if (!page.url().includes(PORTAL_HOST)) {
     await screenshot(page, "04-sin-ingreso");
     const message = await loginError(page);
@@ -106,14 +137,17 @@ async function scrapeAfpUno(session: BrowserSession, options: ScraperOptions): P
 
   progress("Leyendo saldo…");
   debugLog.push("5. Leyendo Total ahorrado...");
-  let total = await waitForTotal(page, BALANCE_TIMEOUT);
+  const waitOnPage = (ms: number) => waitForTotal(() => readTotalText(page), { attempts: Math.ceil(ms / 1000), sleep: () => delay(1000) });
+  let total = await waitOnPage(BALANCE_TIMEOUT);
   if (total.amount === null && (await clickByText(page, "p, span, button", "Mostrar monto"))) {
     debugLog.push("   Monto oculto: pinché Mostrar monto");
     await delay(1000);
-    total = await waitForTotal(page, 10_000);
+    total = await waitOnPage(10_000);
   }
   await screenshot(page, "05-portal");
-  if (total.amount === null) return fail("No encontré el saldo de AFP UNO.");
+  if (total.amount === null) {
+    return fail(total.text && /\d/.test(total.text) ? "AFP UNO mostró el saldo en $0. Intenta de nuevo en un rato." : "No encontré el saldo de AFP UNO.");
+  }
 
   debugLog.push("   Total ahorrado leído");
   progress("Listo");
