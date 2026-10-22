@@ -14,6 +14,7 @@ import afpuno from "./sources/afpuno.js";
 import fintual from "./sources/fintual.js";
 import racional from "./sources/racional.js";
 import afc from "./sources/afc.js";
+import metlife from "./sources/metlife.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -53,6 +54,7 @@ export const sources: Record<string, BankScraper> = {
   fintual,
   racional,
   afc,
+  metlife,
 };
 
 /** Lista de fuentes de saldos soportadas */
@@ -97,3 +99,4 @@ export { default as afpuno } from "./sources/afpuno.js";
 export { default as fintual } from "./sources/fintual.js";
 export { default as racional } from "./sources/racional.js";
 export { default as afc } from "./sources/afc.js";
+export { default as metlife } from "./sources/metlife.js";
