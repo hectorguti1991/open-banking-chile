@@ -18,6 +18,33 @@ export function parseAfcAmount(text: string): number | null {
   return /^[\d.]+$/.test(t) ? Number(t.replace(/\./g, "")) : null;
 }
 
+/** Lo que quedó escrito en el campo RUT. */
+async function rutValue(page: Page): Promise<string> {
+  return page.$eval("#rut", (el) => (el as HTMLInputElement).value).catch(() => "");
+}
+
+/**
+ * Escribe el RUT y revisa que quedó: primero solo números y dígito verificador (la página pone los puntos),
+ * y en el último intento con puntos y guion.
+ */
+async function typeRut(page: Page, rut: string, debugLog: string[]): Promise<boolean> {
+  const clean = rut.replace(/[^0-9kK]/g, "").toUpperCase();
+  const attempts = [clean, clean, formatRut(clean)];
+  for (const [i, text] of attempts.entries()) {
+    const input = await page.$("#rut");
+    if (!input) return false;
+    await input.click({ clickCount: 3 }).catch(() => {});
+    await page.keyboard.press("Backspace").catch(() => {});
+    await input.type(text, { delay: 60 });
+    await delay(700);
+    const value = await rutValue(page);
+    if (value.replace(/[^0-9kK]/g, "").length >= clean.length - 1) return true;
+    debugLog.push(`   El RUT no quedó escrito (intento ${i + 1}, largo ${value.length})`);
+    await delay(1500);
+  }
+  return false;
+}
+
 /** Texto del monto de "Saldo Total" (`null` si todavía no aparece). */
 async function readSaldo(page: Page): Promise<string | null> {
   return page
@@ -55,13 +82,20 @@ async function scrapeAfc(session: BrowserSession, options: ScraperOptions): Prom
   await screenshot(page, "01-ingreso");
 
   if (!page.url().includes("/home")) {
-    const rutInput = await page.waitForSelector("#rut", { visible: true, timeout: 15_000 }).catch(() => null);
-    const passwordInput = await page.$('input[type="password"]');
-    if (!rutInput || !passwordInput) return fail("No encontré el formulario de ingreso de AFC.");
+    if (!(await page.waitForSelector("#rut", { visible: true, timeout: 15_000 }).catch(() => null))) {
+      return fail("No encontré el formulario de ingreso de AFC.");
+    }
+    // La página se vuelve a dibujar al abrir y borra lo que se escribió antes: se espera y se revisa.
+    await delay(3000);
     debugLog.push("2. Escribiendo RUT y contraseña...");
-    await rutInput.type(formatRut(options.rut), { delay: 50 });
+    if (!(await typeRut(page, options.rut, debugLog))) return fail("No pude escribir el RUT en el formulario de AFC.");
+    const passwordInput = await page.$('input[type="password"]');
+    if (!passwordInput) return fail("No encontré el campo de contraseña de AFC.");
+    await passwordInput.click({ clickCount: 3 });
     await passwordInput.type(options.password, { delay: 50 });
     await delay(500);
+    // Si al escribir la contraseña la página borró el RUT, se escribe otra vez.
+    if (!(await rutValue(page))) await typeRut(page, options.rut, debugLog);
     let clicked = false;
     for (const b of await page.$$("button")) {
       if ((await b.evaluate((el) => el.textContent?.trim())) === "Ingresar con contraseña AFC") {
