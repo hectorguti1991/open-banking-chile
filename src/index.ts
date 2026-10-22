@@ -16,6 +16,7 @@ import racional from "./sources/racional.js";
 import afc from "./sources/afc.js";
 import metlife from "./sources/metlife.js";
 import bicehipotecaria from "./sources/bicehipotecaria.js";
+import binance from "./sources/binance.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -57,6 +58,7 @@ export const sources: Record<string, BankScraper> = {
   afc,
   metlife,
   bicehipotecaria,
+  binance,
 };
 
 /** Lista de fuentes de saldos soportadas */
