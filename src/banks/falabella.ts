@@ -491,8 +491,8 @@ async function scrapeCreditCard(page: Page, debugLog: string[], doScreenshots: b
     }
 
     const billedMovements = await paginateCmrMovements(page, MOVEMENT_SOURCE.credit_card_billed, debugLog);
-    debugLog.push(`  Billed: ${billedMovements.length} movements`);
-    allMovements.push(...billedMovements);
+    debugLog.push(`  Billed: ${billedMovements.length} movements (billing date: ${creditCard.lastStatement?.billingDate ?? "none"})`);
+    allMovements.push(...withBillingDate(billedMovements, creditCard.lastStatement?.billingDate));
   }
 
   // Tag movements with card mask
@@ -906,6 +906,14 @@ async function paginateCmrMovements(page: Page, source: MovementSource, debugLog
       installments: normalizeInstallments(m.installments),
     })),
   );
+}
+
+/**
+ * La CMR muestra cada cuota facturada con la fecha de compra. Con la fecha de facturación del estado de
+ * cuenta, la cuota cuenta en el mes en que se cobra.
+ */
+export function withBillingDate(movements: BankMovement[], billingDate: string | undefined): BankMovement[] {
+  return billingDate ? movements.map(m => ({ ...m, billingDate })) : movements;
 }
 
 /** Pincha "siguiente" en la tabla de la CMR (dentro de shadow DOM). `false` si no hay botón habilitado. */
