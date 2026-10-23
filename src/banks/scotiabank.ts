@@ -1,5 +1,6 @@
 import type { Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { scotiabankAccountsSummary } from "./credit-lines.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -336,6 +337,8 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const dataRequests: string[] = [];
   // JSON bodies of the movements API (…/accounts/<type>/<id>/transactions), read after the DOM pass.
   const transactionResponses: Array<{ path: string; json: unknown }> = [];
+  // El resumen de productos del inicio (…/v1/accounts): saldo de la cuenta corriente y líneas de crédito.
+  const home: { summary: ReturnType<typeof scotiabankAccountsSummary> } = { summary: null };
   page.on("response", (res) => {
     const type = res.request().resourceType();
     if (type !== "xhr" && type !== "fetch") return;
@@ -344,6 +347,9 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     if (!u.hostname.endsWith("scotiabank.cl")) return;
     const entry = `${res.status()} ${u.host}${u.pathname}`;
     if (!dataRequests.includes(entry) && dataRequests.length < 80) dataRequests.push(entry);
+    if (/\/bff-home-main-web\/v1\/accounts\/?$/.test(u.pathname) && res.status() === 200) {
+      res.json().then((json) => { home.summary = scotiabankAccountsSummary(json) ?? home.summary; }).catch(() => {});
+    }
     if (/\/transactions\/?$/.test(u.pathname) && res.status() === 200) {
       res.json().then((json) => transactionResponses.push({ path: u.pathname, json })).catch(() => {});
     }
@@ -731,8 +737,10 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   debugLog.push(`  Total: ${deduplicated.length} unique movements`);
   progress(`Listo — ${deduplicated.length} movimientos totales`);
 
-  let balance: number | undefined;
-  if (deduplicated.length > 0 && deduplicated[0].balance > 0) balance = deduplicated[0].balance;
+  // Un saldo de $0 no se distingue de "sin saldo" en los movimientos: primero el resumen del inicio.
+  let balance: number | undefined = home.summary?.balance;
+  debugLog.push(`  Home summary: ${home.summary ? `balance ${home.summary.balance !== undefined ? "yes" : "no"}, ${home.summary.creditLines.length} credit line(s)` : "not captured"}`);
+  if (balance === undefined && deduplicated.length > 0 && deduplicated[0].balance > 0) balance = deduplicated[0].balance;
   if (balance === undefined) {
     balance = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
@@ -753,6 +761,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
     bank,
     accounts: [{ balance: balance ?? undefined, movements: deduplicated }],
     creditCards,
+    creditLines: home.summary?.creditLines,
     screenshot: ss,
     debug: debugLog.join("\n"),
   };

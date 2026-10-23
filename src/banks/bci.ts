@@ -7,6 +7,7 @@ import type { BrowserSession } from "../infrastructure/browser.js";
 import { detect2FA, waitFor2FA } from "../actions/two-factor.js";
 import { detectLoginError } from "../actions/login.js";
 import { createInterceptor } from "../intercept.js";
+import { parseBciHome } from "./credit-lines.js";
 
 // ─── BCI-specific constants ──────────────────────────────────────
 
@@ -494,6 +495,11 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
   await closePopups(page);
   await delay(2000);
 
+  // El recuadro "Cuenta" del inicio trae el saldo disponible y el sobregiro.
+  await page.waitForFunction(() => /Saldo Disponible/.test(document.body?.innerText ?? ""), { timeout: 10000 }).catch(() => {});
+  const homeBox = parseBciHome(await page.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
+  debugLog.push(`  Home: balance ${homeBox.balance !== undefined ? "yes" : "no"}, overdraft ${homeBox.creditLine ? "yes" : "no"}`);
+
   // Account movements
   progress("Extrayendo movimientos de cuenta...");
   debugLog.push("5. Fetching account movements...");
@@ -618,8 +624,9 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
   await doSave(page, "06-final");
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64" })) as string : undefined;
 
-  const accounts: AccountBalance[] = [{ balance, movements: deduplicated }];
-  return { success: true, bank, accounts, creditCards: creditCards.length > 0 ? creditCards : undefined, loans, screenshot: ss, debug: debugLog.join("\n") };
+  const accounts: AccountBalance[] = [{ balance: homeBox.balance ?? balance, movements: deduplicated }];
+  const creditLines = homeBox.creditLine ? [homeBox.creditLine] : undefined;
+  return { success: true, bank, accounts, creditCards: creditCards.length > 0 ? creditCards : undefined, loans, creditLines, screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

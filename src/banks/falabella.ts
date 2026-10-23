@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import type { BankMovement, BankScraper, CreditCardBalance, CreditLineBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import { parseFalabellaCreditLine } from "./credit-lines.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { DebugLog, delay, deduplicateAcrossSources, deduplicateMovements, findChrome, monthYearLabel, normalizeDate, normalizeOwner, normalizeInstallments, parseChileanAmount } from "../utils.js";
 
@@ -916,6 +917,21 @@ export function withBillingDate(movements: BankMovement[], billingDate: string |
   return billingDate ? movements.map(m => ({ ...m, billingDate })) : movements;
 }
 
+/** "Mis productos" del inicio: las filas de línea de crédito. `undefined` si no se ve la lista. */
+async function readCreditLines(page: Page, debugLog: string[]): Promise<CreditLineBalance[] | undefined> {
+  await page.waitForSelector("app-agreements .grid-container", { timeout: 10000 }).catch(() => {});
+  const rows = await page
+    .evaluate(() => Array.from(document.querySelectorAll("app-agreements .grid-container")).map(el => (el as HTMLElement).innerText || ""))
+    .catch(() => [] as string[]);
+  if (rows.length === 0) {
+    debugLog.push("  Mis productos: not found");
+    return undefined;
+  }
+  const lines = rows.map(parseFalabellaCreditLine).filter((l): l is CreditLineBalance => l !== null);
+  debugLog.push(`  Mis productos: ${rows.length} row(s), ${lines.length} credit line(s)`);
+  return lines;
+}
+
 /** Pincha "siguiente" en la tabla de la CMR (dentro de shadow DOM). `false` si no hay botón habilitado. */
 async function clickNextPage(page: Page, host: string): Promise<boolean> {
   return page
@@ -985,6 +1001,7 @@ async function scrapeFalabella(options: ScraperOptions): Promise<ScrapeResult> {
 
     const dashboardUrl = page.url();
     await screenshotIfEnabled(page, "04-post-login", doScreenshots, debugLog);
+    const creditLines = await readCreditLines(page, debugLog);
 
     // Phase 1: Account movements
     const { movements: accountMovements, balance } = await scrapeAccountMovements(page, debugLog, doScreenshots, progress);
@@ -1029,6 +1046,7 @@ async function scrapeFalabella(options: ScraperOptions): Promise<ScrapeResult> {
       bank,
       accounts: [{ balance, movements: deduplicateMovements(accountMovements) }],
       creditCards: [creditCard],
+      creditLines,
       screenshot: ss,
       debug: debugLog.join("\n"),
     };

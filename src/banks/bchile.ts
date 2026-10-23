@@ -1,5 +1,6 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import type { BankMovement, BankScraper, CreditCardBalance, CreditLineBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import { bchileCreditLines } from "./credit-lines.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, formatRut, monthYearLabel, normalizeDate, deduplicateMovements, deduplicateAcrossSources, normalizeInstallments } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -409,10 +410,13 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
 
   // Balance
   let balance: number | undefined;
+  let creditLines: CreditLineBalance[] | undefined;
   try {
-    const saldos = await apiGet<Array<{ moneda: string; tipo: string; disponible: number }>>(page, "bff-pp-prod-ctas-saldos/productos/cuentas/saldos");
+    const saldos = await apiGet<Array<{ moneda: string; tipo: string; numero?: string; disponible: number; cupo?: number }>>(page, "bff-pp-prod-ctas-saldos/productos/cuentas/saldos");
     const clp = saldos.find(s => s.moneda === "CLP" && s.tipo === "CUENTA_CORRIENTE");
     if (clp) { balance = clp.disponible; debugLog.push(`  Balance CLP: $${balance}`); }
+    creditLines = bchileCreditLines(saldos);
+    debugLog.push(`  Credit lines: ${creditLines.length}`);
   } catch { /* ignore */ }
 
   const fullName = products.nombre || `${clientData.datosCliente.nombres} ${clientData.datosCliente.apellidoPaterno}`.trim();
@@ -451,6 +455,7 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
     bank,
     accounts: [{ balance, movements: deduplicateMovements(acctResult.movements) }],
     creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined,
+    creditLines,
     screenshot: ss,
     debug: debugLog.join("\n"),
   };

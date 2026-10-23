@@ -111,6 +111,18 @@ export interface LoanBalance {
 }
 
 /** Resultado del scraping */
+/** Línea de crédito o sobregiro de la cuenta corriente */
+export interface CreditLineBalance {
+  /** Etiqueta (ej: "Línea de crédito ****5018") */
+  label: string;
+  /** Cupo usado, en pesos */
+  used: number;
+  /** Cupo autorizado */
+  total?: number;
+  /** Cupo disponible */
+  available?: number;
+}
+
 export interface ScrapeResult {
   /** Si el scraping fue exitoso */
   success: boolean;
@@ -122,6 +134,8 @@ export interface ScrapeResult {
   creditCards?: CreditCardBalance[];
   /** Créditos de consumo y otros préstamos. Sin el campo, no se pudieron leer (no es lo mismo que una lista vacía). */
   loans?: LoanBalance[];
+  /** Líneas de crédito y sobregiros. Sin el campo, no se pudieron leer (no es lo mismo que una lista vacía). */
+  creditLines?: CreditLineBalance[];
   /** @deprecated Use accounts[].movements instead. Kept for compatibility during migration. */
   movements?: BankMovement[];
   /** @deprecated Use accounts[].balance instead. Kept for compatibility during migration. */
