@@ -462,8 +462,8 @@ async function scrapeCreditCard(page: Page, debugLog: string[], doScreenshots: b
   if (unbilledInfo.periodExpenses !== undefined) creditCard.periodExpenses = unbilledInfo.periodExpenses;
 
   const unbilledMovements = await paginateCmrMovements(page, MOVEMENT_SOURCE.credit_card_unbilled, debugLog);
-  debugLog.push(`  Unbilled: ${unbilledMovements.length} movements`);
-  allMovements.push(...unbilledMovements);
+  debugLog.push(`  Unbilled: ${unbilledMovements.length} movements (next billing date: ${creditCard.nextBillingDate ?? "none"})`);
+  allMovements.push(...withBillingDate(unbilledMovements, creditCard.nextBillingDate));
 
   await screenshotIfEnabled(page, "07-cmr-no-facturados", doScreenshots, debugLog);
 
@@ -909,8 +909,8 @@ async function paginateCmrMovements(page: Page, source: MovementSource, debugLog
 }
 
 /**
- * La CMR muestra cada cuota facturada con la fecha de compra. Con la fecha de facturación del estado de
- * cuenta, la cuota cuenta en el mes en que se cobra.
+ * La CMR muestra cada cuota con la fecha de compra, facturada o por facturar. Con la fecha de facturación
+ * (la del último estado de cuenta, o la próxima para lo por facturar), la cuota cuenta en el mes en que se cobra.
  */
 export function withBillingDate(movements: BankMovement[], billingDate: string | undefined): BankMovement[] {
   return billingDate ? movements.map(m => ({ ...m, billingDate })) : movements;
